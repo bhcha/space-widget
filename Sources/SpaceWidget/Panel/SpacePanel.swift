@@ -14,7 +14,7 @@ final class SpacePanel: NSPanel {
             defer: flag
         )
 
-        level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.backstopMenu)))
+        level = .floating
         backgroundColor = .clear
         hasShadow = false
         collectionBehavior = [.canJoinAllSpaces]

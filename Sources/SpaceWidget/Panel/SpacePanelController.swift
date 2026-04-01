@@ -7,6 +7,13 @@ final class SpacePanelController {
     private var hostingView: NSHostingView<SpaceBarView>?
     private let spaceEngine: SpaceEngine
     private var cancellables = Set<AnyCancellable>()
+    private var screenObserver: NSObjectProtocol?
+
+    deinit {
+        if let screenObserver = screenObserver {
+            NotificationCenter.default.removeObserver(screenObserver)
+        }
+    }
 
     init(spaceEngine: SpaceEngine) {
         self.spaceEngine = spaceEngine
@@ -53,12 +60,12 @@ final class SpacePanelController {
     }
 
     private func observeScreenChanges() {
-        NotificationCenter.default.addObserver(
+        screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self = self, let panel = self.panel, let screen = NSScreen.main else { return }
+            guard let self = self, let panel = self.panel, let screen = panel.screen else { return }
             panel.setFrame(screen.frame, display: true)
         }
     }

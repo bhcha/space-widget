@@ -21,11 +21,15 @@ final class SpaceMonitor: ObservableObject {
     }
 
     @objc private func spaceDidChange() {
+        swLog("EVENT", "nsworkspace.activeSpaceDidChangeNotification received")
         debounceTask?.cancel()
+        swLog("EVENT", "space debounce cancelled_previous=true")
         let task = DispatchWorkItem { [weak self] in
+            swLog("EVENT", "space debounce fired")
             self?.refresh(immediate: false)
         }
         debounceTask = task
+        swLog("EVENT", "space debounce scheduled delay=0.1 immediate=false")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: task)
     }
 
@@ -35,6 +39,7 @@ final class SpaceMonitor: ObservableObject {
             return
         }
 
+        swLog("EVENT", "space refresh begin immediate=\(immediate)")
         guard let resolved = resolveCurrentSpace() else { return }
         commitSpace(resolved)
     }
@@ -84,6 +89,7 @@ final class SpaceMonitor: ObservableObject {
     }
 
     private func commitSpace(_ space: ActiveSpace) {
+        swLog("EVENT", "space commit ordinal=\(space.ordinal) id=\(space.id)")
         currentSpace = space
     }
 

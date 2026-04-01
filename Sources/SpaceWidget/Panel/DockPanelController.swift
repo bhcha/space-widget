@@ -7,6 +7,7 @@ final class DockPanelController {
     private let significantHeightJumpThreshold: CGFloat = 8
     private let maxVisibleIcons = 10
 
+    private let configManager = ConfigManager()
     private let spaceMonitor = SpaceMonitor()
     private let windowListProvider = WindowListProvider()
 
@@ -21,12 +22,15 @@ final class DockPanelController {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var currentSpace = ActiveSpace(id: 0, ordinal: 1)
     private var currentItems: [DockItem] = []
+    private var appLifecycleObservers: [NSObjectProtocol] = []
 
     init() {
         self.metrics = DockMetrics.current()
         setupPanel()
         observeSpaceChanges()
+        observeSpaceLabels()
         observeWorkspaceAppChanges()
+        observeApplicationLifecycle()
         observeScreenChanges()
         observeDockPrefChanges()
     }
@@ -44,7 +48,7 @@ final class DockPanelController {
 
         let hosting = NSHostingView(rootView: DockBarView(
             numberText: String(currentSpace.ordinal),
-            contextText: "현재 스페이스",
+            contextText: currentSpaceLabel,
             items: Array(currentItems.prefix(maxVisibleIcons)),
             metrics: metrics
         ))
@@ -89,12 +93,26 @@ final class DockPanelController {
             .store(in: &cancellables)
     }
 
+    private func observeSpaceLabels() {
+        configManager.$spaceLabels
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.refreshPanel(reason: "space_labels_changed")
+            }
+            .store(in: &cancellables)
+    }
+
     private func observeWorkspaceAppChanges() {
         let center = NSWorkspace.shared.notificationCenter
         let names: [NSNotification.Name] = [
+            NSWorkspace.didDeactivateApplicationNotification,
             NSWorkspace.didActivateApplicationNotification,
+            NSWorkspace.willLaunchApplicationNotification,
             NSWorkspace.didLaunchApplicationNotification,
-            NSWorkspace.didTerminateApplicationNotification
+            NSWorkspace.didTerminateApplicationNotification,
+            NSWorkspace.didHideApplicationNotification,
+            NSWorkspace.didUnhideApplicationNotification
         ]
 
         for name in names {
@@ -102,10 +120,31 @@ final class DockPanelController {
                 forName: name,
                 object: nil,
                 queue: .main
-            ) { [weak self] _ in
-                self?.refreshPanel(reason: "workspace_app_changed")
+            ) { [weak self] notification in
+                guard let self = self else { return }
+                self.logWorkspaceNotification(name: name, notification: notification)
+                self.refreshPanel(reason: "workspace_app_changed:\(name.rawValue)")
             }
             workspaceObservers.append(observer)
+        }
+    }
+
+    private func observeApplicationLifecycle() {
+        let names: [NSNotification.Name] = [
+            NSApplication.didBecomeActiveNotification,
+            NSApplication.didResignActiveNotification,
+            NSApplication.didChangeScreenParametersNotification
+        ]
+
+        for name in names {
+            let observer = NotificationCenter.default.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                self?.logApplicationNotification(name: name, notification: notification)
+            }
+            appLifecycleObservers.append(observer)
         }
     }
 
@@ -122,19 +161,24 @@ final class DockPanelController {
 
         hosting.rootView = DockBarView(
             numberText: String(currentSpace.ordinal),
-            contextText: "현재 스페이스",
+            contextText: currentSpaceLabel,
             items: visibleItems,
             metrics: metrics
         )
 
         let oldFrame = panel.frame
         var newFrame = oldFrame
-        newFrame.size.width = DockBarView.panelWidth(iconCount: visibleItems.count)
+        let layoutWidth = DockBarView.panelWidth(iconCount: visibleItems.count)
+        let fittingWidth = ceil(hosting.fittingSize.width)
+        let layoutWidthText = String(format: "%.1f", layoutWidth)
+        let fittingWidthText = String(format: "%.1f", fittingWidth)
+        let appliedWidth = max(layoutWidth, fittingWidth)
+        newFrame.size.width = appliedWidth
         newFrame.size.height = metrics.barHeight
 
         swLog(
             "SIZE",
-            "update_apply reason=\(reason) space(ordinal=\(currentSpace.ordinal), id=\(currentSpace.id)) apps=\(visibleItems.count) [\(appNames)] targetFrame=\(string(newFrame)) targetHeight=\(metrics.barHeight)"
+            "update_apply reason=\(reason) space(ordinal=\(currentSpace.ordinal), id=\(currentSpace.id)) apps=\(visibleItems.count) [\(appNames)] layoutWidth=\(layoutWidthText) fittingWidth=\(fittingWidthText) appliedWidth=\(String(format: "%.1f", appliedWidth)) targetFrame=\(string(newFrame)) targetHeight=\(metrics.barHeight)"
         )
 
         logSignificantSizeJumpIfNeeded(
@@ -157,6 +201,7 @@ final class DockPanelController {
             queue: .main
         ) { [weak self] _ in
             guard let self = self else { return }
+            swLog("EVENT", "nsapplication.didChangeScreenParametersNotification observed by DockPanelController")
             swLog("SIZE", "screen_parameters_changed")
             self.metrics = DockMetrics.current()
             self.repositionPanel()
@@ -170,6 +215,7 @@ final class DockPanelController {
             queue: .main
         ) { [weak self] _ in
             guard let self = self else { return }
+            swLog("EVENT", "distributed.com.apple.dock.prefchanged received")
             swLog("SIZE", "dock_preferences_changed")
             self.metrics = DockMetrics.current()
             self.repositionPanel()
@@ -207,6 +253,10 @@ final class DockPanelController {
         return NSRect(x: x, y: y, width: contentSize.width, height: metrics.barHeight)
     }
 
+    private var currentSpaceLabel: String {
+        configManager.spaceLabels[currentSpace.ordinal] ?? "Untitled"
+    }
+
     private func observePanelGeometry(_ panel: DockPanel) {
         panelResizeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didResizeNotification,
@@ -240,6 +290,21 @@ final class DockPanelController {
         }
 
         swLog("SIZE", message)
+    }
+
+    private func logWorkspaceNotification(name: NSNotification.Name, notification: Notification) {
+        let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        let appName = app?.localizedName ?? "nil"
+        let bundleID = app?.bundleIdentifier ?? "nil"
+        let pid = app.map { String($0.processIdentifier) } ?? "nil"
+        swLog(
+            "EVENT",
+            "workspace notification=\(name.rawValue) app=\(appName) bundleID=\(bundleID) pid=\(pid)"
+        )
+    }
+
+    private func logApplicationNotification(name: NSNotification.Name, notification: Notification) {
+        swLog("EVENT", "application notification=\(name.rawValue)")
     }
 
     private func logSignificantSizeJumpIfNeeded(
@@ -280,6 +345,9 @@ final class DockPanelController {
         let center = NSWorkspace.shared.notificationCenter
         for observer in workspaceObservers {
             center.removeObserver(observer)
+        }
+        for observer in appLifecycleObservers {
+            NotificationCenter.default.removeObserver(observer)
         }
     }
 }

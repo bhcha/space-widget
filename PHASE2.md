@@ -1,97 +1,96 @@
-# Phase 2
+# Phase 2 (v2) — UI 재구축
 
 ## 목적
 
-- Phase 1의 `SpaceEngine -> DockSnapshot` 파이프라인 위에 최소한의 패널 UI를 다시 올린다.
-- 기존 look & feel의 방향은 유지하되, UI 상태 관리가 프로세스 코어를 오염시키지 않도록 범위를 제한한다.
-- 먼저 "보인다"와 "붙는다"를 복구하고, 이후 인터랙션과 정교한 상태머신은 별도 단계로 분리한다.
+- Barik의 패널 구조를 그대로 가져와서 화면을 띄운다.
+- Phase 1의 `SpaceEngine` 연결은 이후에 한다. 먼저 **하드코딩된 더미 데이터로 화면이 정상 표시되는지 검증**한다.
 
-## 현재 구현 범위
+## Barik 패널 구조 (그대로 차용)
 
-- 앱 실행 시 `DockPanelController`를 생성해 플로팅 패널을 띄운다.
-- 패널 콘텐츠는 `DockBarView` 하나로 렌더링된다.
-- UI는 현재 `SpaceEngine.$snapshot`을 직접 구독한다.
-- 패널은 현재 스페이스 번호, 라벨, 앱 개수만 표시한다.
-- Space 변경과 앱 개수 변경 시 `hostingView.rootView`를 교체하고, `fittingSize` 기반으로 패널 폭을 다시 맞춘다.
-- 패널 위치는 기본적으로 현재 마우스가 있는 화면의 좌하단 Dock 위에 잡힌다.
-- 화면 구성 변경과 Dock preference 변경 시 패널을 다시 배치한다.
-- 비활성 패널에서도 hover tooltip이 보이도록 별도 tooltip panel을 사용한다.
-
-## 현재 구현 파일
-
-- `Sources/SpaceWidget/App/SpaceWidgetApp.swift`
-- `Sources/SpaceWidget/Panel/DockPanel.swift`
-- `Sources/SpaceWidget/Panel/DockPanelController.swift`
-- `Sources/SpaceWidget/Panel/DockBarLayout.swift`
-- `Sources/SpaceWidget/Views/DockBarView.swift`
-
-## 현재 UI 구조
+Barik은 작은 패널이 아니라 **전체 화면 크기의 투명 NSPanel**을 만들고, SwiftUI가 내부에서 콘텐츠를 배치한다.
 
 ```text
-SpaceEngine.$snapshot
-  -> DockPanelController.observeEngine()
-  -> DockBarView(spaceNumber, spaceLabel, appCount, metrics)
-  -> NSHostingView
-  -> DockPanel
+NSPanel (full screen frame)
+├── level: .backstopMenu (메뉴바 아래, 일반 윈도우 아래)
+├── styleMask: [.nonactivatingPanel]
+├── backgroundColor: .clear
+├── hasShadow: false
+├── collectionBehavior: [.canJoinAllSpaces]
+├── contentView: NSHostingView
+│   └── SpaceBarView (SwiftUI)
+│       └── 좌하단에 고정된 bar pill
 ```
 
-즉, 현재 Phase 2는 아직 `DockUIModel` 계층 없이 `snapshot -> panel view`로 바로 연결된 최소 버전이다.
+### 핵심 차이점 (기존 vs Barik 방식)
 
-## 확인된 동작
+| 항목 | 기존 방식 | Barik 방식 (채택) |
+|------|----------|------------------|
+| 패널 크기 | 콘텐츠 크기에 맞춤 | **전체 화면** |
+| 패널 위치 | frame 좌표 계산 | **SwiftUI가 내부 배치** |
+| 크기 변경 | panel.setFrame 호출 | **SwiftUI 자동 레이아웃** |
+| 공간 전환 글리치 | frame 조작으로 발생 | **frame 불변, 글리치 없음** |
 
-- 패널 생성 및 표시
-- `spaceNumber`, `spaceLabel`, `appCount` 표시
-- snapshot 갱신 시 UI 갱신
-- `hosting.fittingSize`를 이용한 폭 재계산
-- `DockMetrics.current()` 기준 높이 유지
-- tooltip 표시
-- `swift build` 통과
+## 위치
 
-## 아직 구현되지 않은 것
+- Dock과 같은 Y레벨, 좌측 (Barik은 우측)
+- SwiftUI에서 `.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)` + padding
 
-- `DockUIModel`
-- loading/display phase 상태머신
-- locked width / stable width 정책
-- 앱 아이콘 렌더링
-- 앱 재정렬
-- 메뉴바 컨트롤러
-- 클릭 액션/앱 활성화/앱별 동작
-- look & feel의 세부 복원
-  - 현재는 chip + label + app count만 있는 단순 바 형태
+## UI 레이아웃
 
-## 현재 설계와 계획서의 차이
+```text
+┌─────────────────────────────────────────────┐
+│ [숫자]  [컨텍스트 라벨]  │  [앱아이콘] [앱아이콘] ... │
+└─────────────────────────────────────────────┘
+```
 
-- 계획서에는 `DockUIModel`이 UI 전용 상태를 담당하는 구조가 정의되어 있다.
-- 실제 현재 구현은 그 단계 전의 최소 버전이며, `DockPanelController`가 `SpaceEngine`을 직접 구독한다.
-- 즉, 현재 Phase 2는 "UI 재도입 1차"이며 "UI 상태 분리 완료" 단계는 아직 아니다.
+- 숫자: 현재 스페이스 번호 (예: "1")
+- 컨텍스트: 스페이스 라벨 (예: "Work")
+- 구분자: Barik 스타일 세로 Capsule
+- 앱 아이콘: 현재 스페이스의 앱 아이콘 목록
 
-## transient space 대응 메모
+## 스타일
 
-- Flameshot 캡처 시 생성되는 임시 active space는 `SpaceMonitor`에서 metadata 기준으로 차단한다.
-- 현재 기준:
-  - `type == 0`
-  - `listed == true`
-  인 경우만 user desktop으로 취급한다.
-- 따라서 transient candidate는 UI snapshot으로 반영되지 않는다.
+- Barik 참고: 테두리 없음, 반투명 검정 배경 (0.55), 라운드 코너 9pt
+- 텍스트: 흰색 (0.9 opacity), 라벨은 (0.55 opacity)
+- 구분자: Capsule, 흰색 0.2 opacity, 높이 12pt
+- 블러 효과 사용하지 않음 (캡처 프로그램 충돌 이슈)
 
-## 검증 포인트
+## 구현 파일
 
-- 앱 실행 시 패널이 생성된다.
-- 일반 desktop 전환 시 `spaceNumber`, `spaceLabel`, `appCount`가 반영된다.
-- Flameshot 같은 캡처 overlay는 잘못된 `space_changed` UI 갱신을 만들지 않는다.
-- 패널이 화면/Dock 변경 시 적절히 재배치된다.
+| 파일 | 역할 |
+|------|------|
+| `Panel/SpacePanel.swift` | NSPanel 서브클래스 (Barik의 패널 설정 그대로) |
+| `Panel/SpacePanelController.swift` | 패널 생성/관리, 화면 변경 대응 |
+| `Views/SpaceBarView.swift` | SwiftUI 메인 뷰 (좌하단 pill bar) |
 
-## 현재 한계
+## Step 1: 더미 데이터로 화면 띄우기
 
-- `DockPanelController`가 레이아웃, 위치, 엔진 구독을 모두 담당하고 있어 책임이 아직 크다.
-- `hosting.fittingSize` 기반 폭 재계산은 이후 다시 흔들림 이슈를 만들 가능성이 있다.
-- UI 전환 정책이 아직 별도 모델로 분리되지 않았다.
+1. `SpacePanel` 생성 — 전체 화면 투명 패널
+2. `SpaceBarView` 생성 — 하드코딩 데이터로 렌더링
+   - 숫자: "1"
+   - 라벨: "Work"  
+   - 아이콘: NSWorkspace.shared.icon (Finder, Safari, Terminal 등 3-4개)
+3. `SpacePanelController` 생성 — 패널에 SwiftUI 뷰 연결
+4. `AppDelegate`에서 `SpacePanelController` 생성
+5. 빌드 → 실행 → 스크린샷으로 위치/디자인 검증
 
-## 다음 단계
+### 검증 기준
 
-1. `DockUIModel` 도입
-2. `SpaceEngine.$snapshot -> DockUIModel` 어댑터 작성
-3. `DockPanelController`는 `DockUIModel`만 구독하도록 축소
-4. 앱 아이콘 렌더링 복원
-5. loading/display phase와 폭 정책을 UI 계층으로 한정
-6. 기존 look & feel 복원
+- [ ] 앱 실행 시 좌하단에 bar pill이 보인다
+- [ ] Dock과 같은 Y레벨에 위치한다
+- [ ] 숫자, 라벨, 구분자, 아이콘이 모두 표시된다
+- [ ] 패널이 다른 윈도우 뒤에 있다 (backstopMenu 레벨)
+- [ ] 스페이스 전환 시 패널 크기/위치 글리치 없다
+- [ ] 캡처 프로그램 실행 시 시각적 문제 없다
+
+## Step 2: SpaceEngine 연결
+
+- `SpacePanelController`가 `SpaceEngine.$snapshot`을 구독
+- `DockSnapshot` → `SpaceBarView` 데이터 매핑
+- 더미 데이터 제거
+
+## Step 3: 전환 검증
+
+- 스페이스 전환 시 번호/라벨/아이콘 갱신 확인
+- 크기 변경 글리치 없음 확인 (패널 frame이 불변이므로)
+- 앱 실행/종료 시 아이콘 목록 갱신 확인

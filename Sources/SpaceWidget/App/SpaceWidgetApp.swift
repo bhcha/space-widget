@@ -1,10 +1,21 @@
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var panelController: DockPanelController?
+    private var configManager: ConfigManager?
+    private var spaceEngine: SpaceEngine?
+    private var stateWriter: StateWriter?
+    private var panelController: SpacePanelController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        self.panelController = DockPanelController()
+        let configManager = ConfigManager()
+        let spaceEngine = SpaceEngine(configManager: configManager)
+        let stateWriter = StateWriter()
+        stateWriter.subscribe(to: spaceEngine.$snapshot)
+
+        self.configManager = configManager
+        self.spaceEngine = spaceEngine
+        self.stateWriter = stateWriter
+        self.panelController = SpacePanelController(spaceEngine: spaceEngine)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

@@ -14,3 +14,8 @@ func CGSManagedDisplayGetCurrentSpace(_ cid: UInt32, _ display: CFString) -> UIn
 ///   0 = user desktop, 1 = fullscreen/overlay, 2 = system, 4 = tiled
 @_silgen_name("CGSSpaceGetType")
 func CGSSpaceGetType(_ cid: UInt32, _ sid: UInt64) -> Int32
+
+/// Returns the spaces a window belongs to.
+/// mask: 0x7 = all spaces, 0x1 = visible spaces
+@_silgen_name("CGSCopySpacesForWindows")
+func CGSCopySpacesForWindows(_ cid: UInt32, _ mask: Int32, _ windowIDs: CFArray) -> CFArray?

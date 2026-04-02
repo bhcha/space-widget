@@ -6,8 +6,10 @@ final class SpacePanelController {
     private var panel: SpacePanel?
     private var hostingView: NSHostingView<SpaceBarView>?
     private let spaceEngine: SpaceEngine
+    private let pageState = SpaceBarPageState()
     private var cancellables = Set<AnyCancellable>()
     private var screenObserver: NSObjectProtocol?
+    private var lastSpaceID: UInt64? = nil
 
     deinit {
         if let screenObserver = screenObserver {
@@ -29,8 +31,9 @@ final class SpacePanelController {
         let initialView = SpaceBarView(
             spaceNumber: "\(snapshot.spaceNumber)",
             spaceLabel: snapshot.spaceLabel,
-            items: Array(snapshot.items.prefix(SpaceBarConstants.iconsPerPage)),
-            totalItemCount: snapshot.items.count
+            items: snapshot.items,
+            totalItemCount: snapshot.items.count,
+            pageState: pageState
         )
         let hostingView = NSHostingView(rootView: initialView)
         self.hostingView = hostingView
@@ -53,11 +56,16 @@ final class SpacePanelController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] snapshot in
                 guard let self = self, let hostingView = self.hostingView else { return }
+                if snapshot.spaceID != self.lastSpaceID {
+                    self.pageState.reset()
+                    self.lastSpaceID = snapshot.spaceID
+                }
                 hostingView.rootView = SpaceBarView(
                     spaceNumber: "\(snapshot.spaceNumber)",
                     spaceLabel: snapshot.spaceLabel,
-                    items: Array(snapshot.items.prefix(SpaceBarConstants.iconsPerPage)),
-                    totalItemCount: snapshot.items.count
+                    items: snapshot.items,
+                    totalItemCount: snapshot.items.count,
+                    pageState: self.pageState
                 )
             }
             .store(in: &cancellables)

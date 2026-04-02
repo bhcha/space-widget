@@ -19,6 +19,7 @@ final class SpacePanel: NSPanel {
         hasShadow = false
         collectionBehavior = [.canJoinAllSpaces]
         isOpaque = false
+        acceptsMouseMovedEvents = true
     }
 
     override var canBecomeKey: Bool { false }

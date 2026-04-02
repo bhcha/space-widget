@@ -1,14 +1,28 @@
 import SwiftUI
 import AppKit
 
+enum SpaceBarConstants {
+    /// Icons per page (test: 5, production: 10)
+    static let iconsPerPage = 5
+    static let iconSize: CGFloat = 39
+    static let iconSpacing: CGFloat = 9
+}
+
 struct SpaceBarView: View {
     let spaceNumber: String
     let spaceLabel: String
+    let items: [DockItem]
+    let totalItemCount: Int
+
+    private var totalPages: Int {
+        totalItemCount <= 0 ? 0 : Int(ceil(Double(totalItemCount) / Double(SpaceBarConstants.iconsPerPage)))
+    }
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             Color.clear
             barContent
+                .animation(.smooth(duration: 0.3), value: items.map(\.id))
                 .padding(.leading, 8)
                 .padding(.bottom, 6)
         }
@@ -28,16 +42,30 @@ struct SpaceBarView: View {
                 .lineLimit(1)
                 .frame(width: 74, alignment: .leading)
 
-            Capsule()
-                .fill(Color.white.opacity(0.2))
-                .frame(width: 1.5, height: 18)
+            if !items.isEmpty {
+                Capsule()
+                    .fill(Color.white.opacity(0.2))
+                    .frame(width: 1.5, height: 18)
+            }
 
-            HStack(spacing: 9) {
-                ForEach(dummyIcons, id: \.self) { icon in
-                    Image(nsImage: icon)
+            HStack(spacing: SpaceBarConstants.iconSpacing) {
+                ForEach(items) { item in
+                    Image(nsImage: item.icon)
                         .resizable()
                         .scaledToFit()
-                        .frame(width: 39, height: 39)
+                        .frame(width: SpaceBarConstants.iconSize, height: SpaceBarConstants.iconSize)
+                        .opacity(item.isFocused ? 1 : 0.7)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
+
+            if totalPages > 1 {
+                HStack(spacing: 3) {
+                    ForEach(0..<totalPages, id: \.self) { page in
+                        Circle()
+                            .fill(Color.white.opacity(page == 0 ? 0.8 : 0.25))
+                            .frame(width: 4, height: 4)
+                    }
                 }
             }
         }
@@ -47,20 +75,5 @@ struct SpaceBarView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color.black.opacity(0.55))
         )
-    }
-
-    private var dummyIcons: [NSImage] {
-        let bundleIDs = [
-            "com.apple.finder",
-            "com.apple.Safari",
-            "com.apple.Terminal",
-            "com.google.Chrome"
-        ]
-        return bundleIDs.compactMap { bundleID in
-            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-                return NSWorkspace.shared.icon(forFile: url.path)
-            }
-            return nil
-        }
     }
 }

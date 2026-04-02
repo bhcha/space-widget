@@ -28,7 +28,9 @@ final class SpacePanelController {
         let snapshot = spaceEngine.snapshot
         let initialView = SpaceBarView(
             spaceNumber: "\(snapshot.spaceNumber)",
-            spaceLabel: snapshot.spaceLabel
+            spaceLabel: snapshot.spaceLabel,
+            items: Array(snapshot.items.prefix(SpaceBarConstants.iconsPerPage)),
+            totalItemCount: snapshot.items.count
         )
         let hostingView = NSHostingView(rootView: initialView)
         self.hostingView = hostingView
@@ -53,7 +55,9 @@ final class SpacePanelController {
                 guard let self = self, let hostingView = self.hostingView else { return }
                 hostingView.rootView = SpaceBarView(
                     spaceNumber: "\(snapshot.spaceNumber)",
-                    spaceLabel: snapshot.spaceLabel
+                    spaceLabel: snapshot.spaceLabel,
+                    items: Array(snapshot.items.prefix(SpaceBarConstants.iconsPerPage)),
+                    totalItemCount: snapshot.items.count
                 )
             }
             .store(in: &cancellables)

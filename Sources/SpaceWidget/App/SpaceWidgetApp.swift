@@ -81,8 +81,6 @@ struct SpaceWidgetApp {
           --migrate --force    Migrate and overwrite existing files
           --config-dir <path>  Override the config directory (default: ~/.config/space-dock)
 
-        SIGNALS:
-          SIGUSR1              Reload config (pkill -USR1 SpaceWidget)
         """)
     }
 }

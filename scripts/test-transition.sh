@@ -1,7 +1,8 @@
 #!/bin/bash
 set -e
 
-PROJECT_DIR="/Users/chabh/workspace/space-widget"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOG_FILE="$HOME/.config/space-dock/spacewidget.log"
 CAPTURE_DIR="$HOME/.config/space-dock/test-captures"
 
@@ -22,11 +23,11 @@ sleep 2
 
 wait_for_transition() {
     local count_before
-    count_before=$(grep -c 'space transition finalize ordinal' "$LOG_FILE" 2>/dev/null || echo 0)
+    count_before=$(grep -c '\[SNAPSHOT\] applied reason=space_changed' "$LOG_FILE" 2>/dev/null || echo 0)
     echo "  → 스페이스를 전환하세요..."
     while true; do
         local count_now
-        count_now=$(grep -c 'space transition finalize ordinal' "$LOG_FILE" 2>/dev/null || echo 0)
+        count_now=$(grep -c '\[SNAPSHOT\] applied reason=space_changed' "$LOG_FILE" 2>/dev/null || echo 0)
         if [ "$count_now" -gt "$count_before" ]; then
             sleep 0.5
             break
@@ -62,16 +63,16 @@ echo ""
 echo "=== 분석 ==="
 
 echo ""
-echo "--- FRAME 모니터 (외부 프레임 변경) ---"
-grep '\[FRAME\] CHANGED' "$LOG_FILE" || echo "  (없음)"
+echo "--- SNAPSHOT applied ---"
+grep '\[SNAPSHOT\] applied' "$LOG_FILE" || echo "  (없음)"
 
 echo ""
-echo "--- SIZE-JUMP ---"
-grep 'SIZE-JUMP' "$LOG_FILE" || echo "  (없음)"
+echo "--- SPACE events ---"
+grep '\[SPACE\]' "$LOG_FILE" || echo "  (없음)"
 
 echo ""
-echo "--- 전환별 패널 폭 ---"
-grep 'update_apply' "$LOG_FILE" | sed -n 's/.*reason=\([^ ]*\).*space(ordinal=\([0-9]*\).*appliedWidth=\([^ ]*\).*/  ordinal=\2 \1 → width=\3/p'
+echo "--- FETCH results ---"
+grep '\[FETCH\] result' "$LOG_FILE" || echo "  (없음)"
 
 echo ""
 echo "--- 캡처 비교 ---"

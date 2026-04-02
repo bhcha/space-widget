@@ -40,6 +40,7 @@ struct SpaceBarView: View {
     let spaceLabel: String
     let items: [DockItem]
     let totalItemCount: Int
+    let onEditLabel: () -> Void
 
     @ObservedObject var pageState: SpaceBarPageState
     @GestureState private var dragOffset: CGFloat = 0
@@ -121,11 +122,14 @@ struct SpaceBarView: View {
                 .foregroundColor(.white.opacity(0.9))
                 .frame(width: 32, alignment: .center)
 
-            Text(spaceLabel)
-                .font(.system(size: 11, weight: .regular))
-                .foregroundColor(.white.opacity(0.55))
-                .lineLimit(1)
-                .frame(width: 74, alignment: .leading)
+            Button(action: onEditLabel) {
+                Text(spaceLabel)
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundColor(.white.opacity(0.55))
+                    .lineLimit(1)
+                    .frame(width: 74, alignment: .leading)
+            }
+            .buttonStyle(.plain)
 
             if !pagedItems.isEmpty {
                 Capsule()

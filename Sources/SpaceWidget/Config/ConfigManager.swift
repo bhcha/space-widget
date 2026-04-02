@@ -75,10 +75,18 @@ final class ConfigManager: ObservableObject {
     // MARK: - Init
 
     init() {
-        load()
+        loadInitialState()
     }
 
     // MARK: - Load
+
+    private func loadInitialState() {
+        ensureConfigDirectoryAndDefaults()
+        writeActiveConfigDirState()
+        ignoredApps = loadIgnoredApps()
+        spaceLabels = loadSpaceLabels()
+        appActions = loadAppActions()
+    }
 
     func load() {
         queue.async { [weak self] in
@@ -151,7 +159,12 @@ final class ConfigManager: ObservableObject {
             return
         }
         var updated = spaceLabels
-        updated[ordinal] = label
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            updated.removeValue(forKey: ordinal)
+        } else {
+            updated[ordinal] = trimmed
+        }
         saveSpaceLabels(updated)
     }
 

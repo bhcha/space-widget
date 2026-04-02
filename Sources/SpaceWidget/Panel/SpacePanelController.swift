@@ -28,13 +28,7 @@ final class SpacePanelController {
         guard let screenFrame = NSScreen.main?.frame else { return }
 
         let snapshot = spaceEngine.snapshot
-        let initialView = SpaceBarView(
-            spaceNumber: "\(snapshot.spaceNumber)",
-            spaceLabel: snapshot.spaceLabel,
-            items: snapshot.items,
-            totalItemCount: snapshot.items.count,
-            pageState: pageState
-        )
+        let initialView = makeSpaceBarView(from: snapshot)
         let hostingView = NSHostingView(rootView: initialView)
         self.hostingView = hostingView
 
@@ -60,13 +54,7 @@ final class SpacePanelController {
                     self.pageState.reset()
                     self.lastSpaceID = snapshot.spaceID
                 }
-                hostingView.rootView = SpaceBarView(
-                    spaceNumber: "\(snapshot.spaceNumber)",
-                    spaceLabel: snapshot.spaceLabel,
-                    items: snapshot.items,
-                    totalItemCount: snapshot.items.count,
-                    pageState: self.pageState
-                )
+                hostingView.rootView = self.makeSpaceBarView(from: snapshot)
 
                 // Auto-navigate to the page containing the focused app
                 if let focusedBundleID = snapshot.focusedBundleID,
@@ -89,5 +77,40 @@ final class SpacePanelController {
             guard let self = self, let panel = self.panel, let screen = panel.screen else { return }
             panel.setFrame(screen.frame, display: true)
         }
+    }
+
+    private func makeSpaceBarView(from snapshot: DockSnapshot) -> SpaceBarView {
+        SpaceBarView(
+            spaceNumber: "\(snapshot.spaceNumber)",
+            spaceLabel: snapshot.spaceLabel,
+            items: snapshot.items,
+            totalItemCount: snapshot.items.count,
+            onEditLabel: { [weak self] in
+                self?.promptForSpaceLabelEdit(snapshot: snapshot)
+            },
+            pageState: pageState
+        )
+    }
+
+    private func promptForSpaceLabelEdit(snapshot: DockSnapshot) {
+        let alert = NSAlert()
+        alert.messageText = "Edit Space Label"
+        alert.informativeText = "Update the context text for Space \(snapshot.spaceNumber)."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        textField.stringValue = snapshot.spaceLabel == "Untitled" ? "" : snapshot.spaceLabel
+        alert.accessoryView = textField
+
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return }
+
+        spaceEngine.configManager.updateSpaceLabel(
+            ordinal: snapshot.spaceNumber,
+            label: textField.stringValue
+        )
     }
 }

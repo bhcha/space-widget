@@ -98,9 +98,37 @@ struct SpaceBarView: View {
         }
     }
 
-    private func activateApp(bundleID: String) {
-        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else { return }
-        app.activate(options: [.activateAllWindows])
+    /// Activate a specific window on the current space via AXUIElement,
+    /// avoiding NSRunningApplication.activate which can jump to another space.
+    private func activateApp(pid: pid_t) {
+        let appElement = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        let axResult = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+        guard axResult == .success, let axWindows = windowsRef as? [AXUIElement] else {
+            swLog("ACTIVATE", "AXWindows failed error=\(axResult.rawValue) pid=\(pid)")
+            return
+        }
+
+        let cid = CGSMainConnectionID()
+        let currentSpaceID = CGSCurrentSpaceID()
+
+        for axWindow in axWindows {
+            var wid: CGWindowID = 0
+            guard _AXUIElementGetWindow(axWindow, &wid) == .success else { continue }
+
+            guard let spaces = CGSCopySpacesForWindows(cid, 0x7, [wid] as CFArray) as? [UInt64],
+                  spaces.contains(currentSpaceID)
+            else { continue }
+
+            let raiseResult = AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
+            let frontResult = AXUIElementSetAttributeValue(appElement, kAXFrontmostAttribute as CFString, kCFBooleanTrue as CFTypeRef)
+            if raiseResult == .success && frontResult == .success {
+                return
+            }
+            swLog("ACTIVATE", "AXAction failed pid=\(pid) wid=\(wid) raise=\(raiseResult.rawValue) front=\(frontResult.rawValue), trying next window")
+        }
+
+        swLog("ACTIVATE", "no current-space window found for pid=\(pid)")
     }
 
     private var interactiveBarContent: some View {
@@ -168,7 +196,7 @@ struct SpaceBarView: View {
                                 )
                                 .opacity(item.isFocused ? 1 : 0.7)
                                 .onTapGesture {
-                                    activateApp(bundleID: item.id)
+                                    activateApp(pid: item.pid)
                                 }
                         }
                     }

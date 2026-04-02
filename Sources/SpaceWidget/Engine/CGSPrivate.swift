@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import ApplicationServices
 
 @_silgen_name("CGSMainConnectionID")
 func CGSMainConnectionID() -> UInt32
@@ -19,3 +20,18 @@ func CGSSpaceGetType(_ cid: UInt32, _ sid: UInt64) -> Int32
 /// mask: 0x7 = all spaces, 0x1 = visible spaces
 @_silgen_name("CGSCopySpacesForWindows")
 func CGSCopySpacesForWindows(_ cid: UInt32, _ mask: Int32, _ windowIDs: CFArray) -> CFArray?
+
+/// Returns the CGWindowID for an AXUIElement window.
+@_silgen_name("_AXUIElementGetWindow")
+func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: UnsafeMutablePointer<CGWindowID>) -> AXError
+
+/// Resolve the current space ID on the main display, using UUID-based lookup with "Main" fallback.
+func CGSCurrentSpaceID() -> UInt64 {
+    let cid = CGSMainConnectionID()
+    let mainDisplayID = CGMainDisplayID()
+    if let uuid = CGDisplayCreateUUIDFromDisplayID(mainDisplayID),
+       let uuidString = CFUUIDCreateString(nil, uuid.takeRetainedValue()) {
+        return CGSManagedDisplayGetCurrentSpace(cid, uuidString as CFString)
+    }
+    return CGSManagedDisplayGetCurrentSpace(cid, "Main" as CFString)
+}

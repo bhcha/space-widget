@@ -57,15 +57,15 @@ final class WindowListProvider {
             }
         }
 
-        // Deduplicate by bundle ID (keep entry with highest window count if same bundle)
+        // Deduplicate by bundle ID.
+        // Keep the first-seen pid (topmost in z-order) and accumulate window counts.
         var byBundle: [String: (pid: pid_t, name: String, windowCount: Int)] = [:]
 
         for pid in seenPIDs {
             guard let info = pidInfo[pid] else { continue }
-            if let existing = byBundle[info.bundleID] {
-                if info.windowCount > existing.windowCount {
-                    byBundle[info.bundleID] = (pid: pid, name: info.name, windowCount: info.windowCount)
-                }
+            if var existing = byBundle[info.bundleID] {
+                existing.windowCount += info.windowCount
+                byBundle[info.bundleID] = existing
             } else {
                 byBundle[info.bundleID] = (pid: pid, name: info.name, windowCount: info.windowCount)
             }

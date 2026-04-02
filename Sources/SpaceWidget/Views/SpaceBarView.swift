@@ -2,58 +2,36 @@ import SwiftUI
 import AppKit
 
 enum SpaceBarConstants {
-    /// Icons per page (test: 5, production: 10)
+    /// Icons per page
     static let iconsPerPage = 5
     static let iconSize: CGFloat = 39
     static let iconSpacing: CGFloat = 9
 }
 
-enum SpaceBarSwipeDirection {
-    case previous
-    case next
-
-    var transition: AnyTransition {
-        switch self {
-        case .previous:
-            return .asymmetric(
-                insertion: .move(edge: .leading),
-                removal: .move(edge: .trailing)
-            )
-        case .next:
-            return .asymmetric(
-                insertion: .move(edge: .trailing),
-                removal: .move(edge: .leading)
-            )
-        }
-    }
-}
-
 final class SpaceBarPageState: ObservableObject {
-    @Published private(set) var currentPage = 0
-    @Published private(set) var swipeDirection: SpaceBarSwipeDirection = .next
+    @Published var currentPage = 0
 
     func goToNextPage(totalPages: Int) {
         guard currentPage < totalPages - 1 else { return }
-        swipeDirection = .next
         currentPage += 1
     }
 
     func goToPreviousPage() {
         guard currentPage > 0 else { return }
-        swipeDirection = .previous
         currentPage -= 1
+    }
+
+    func goToPage(_ page: Int) {
+        currentPage = page
     }
 
     func reset() {
         currentPage = 0
-        swipeDirection = .next
     }
 
     func clampPage(totalPages: Int) {
-        let clampedPage = max(0, min(currentPage, totalPages - 1))
-        guard clampedPage != currentPage else { return }
-        swipeDirection = clampedPage > currentPage ? .next : .previous
-        currentPage = clampedPage
+        if totalPages <= 0 { currentPage = 0; return }
+        if currentPage >= totalPages { currentPage = totalPages - 1 }
     }
 }
 
@@ -64,6 +42,7 @@ struct SpaceBarView: View {
     let totalItemCount: Int
 
     @ObservedObject var pageState: SpaceBarPageState
+    @GestureState private var dragOffset: CGFloat = 0
 
     private var currentPage: Int {
         pageState.currentPage
@@ -73,11 +52,24 @@ struct SpaceBarView: View {
         totalItemCount <= 0 ? 0 : Int(ceil(Double(totalItemCount) / Double(SpaceBarConstants.iconsPerPage)))
     }
 
-    private var currentPageItems: [DockItem] {
-        let start = currentPage * SpaceBarConstants.iconsPerPage
-        let end = min(start + SpaceBarConstants.iconsPerPage, items.count)
-        guard start < items.count else { return [] }
-        return Array(items[start..<end])
+    private var iconViewportWidth: CGFloat {
+        let count = CGFloat(SpaceBarConstants.iconsPerPage)
+        return count * SpaceBarConstants.iconSize + (count - 1) * SpaceBarConstants.iconSpacing
+    }
+
+    private var pagedItems: [[DockItem]] {
+        stride(from: 0, to: items.count, by: SpaceBarConstants.iconsPerPage).map { start in
+            Array(items[start..<min(start + SpaceBarConstants.iconsPerPage, items.count)])
+        }
+    }
+
+    private var pageStripOffset: CGFloat {
+        let baseOffset = -CGFloat(currentPage) * iconViewportWidth
+        // Rubber-band at edges
+        let isAtStart = currentPage == 0 && dragOffset > 0
+        let isAtEnd = currentPage >= totalPages - 1 && dragOffset < 0
+        let effectiveDrag = (isAtStart || isAtEnd) ? dragOffset * 0.3 : dragOffset
+        return baseOffset + effectiveDrag
     }
 
     var body: some View {
@@ -87,15 +79,21 @@ struct SpaceBarView: View {
             barContent
                 .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .gesture(
-                    DragGesture(minimumDistance: 30)
+                    DragGesture(minimumDistance: 15)
+                        .updating($dragOffset) { value, state, transaction in
+                            state = value.translation.width
+                            transaction.animation = nil // no animation during drag — track finger 1:1
+                        }
                         .onEnded { value in
-                            let horizontal = value.translation.width
-                            if horizontal < -30 && currentPage < totalPages - 1 {
-                                withAnimation(.smooth(duration: 0.25)) {
+                            let threshold: CGFloat = iconViewportWidth * 0.3
+                            let projected = value.predictedEndTranslation.width
+
+                            if projected < -threshold {
+                                withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.8)) {
                                     pageState.goToNextPage(totalPages: totalPages)
                                 }
-                            } else if horizontal > 30 && currentPage > 0 {
-                                withAnimation(.smooth(duration: 0.25)) {
+                            } else if projected > threshold {
+                                withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.8)) {
                                     pageState.goToPreviousPage()
                                 }
                             }
@@ -124,25 +122,34 @@ struct SpaceBarView: View {
                 .lineLimit(1)
                 .frame(width: 74, alignment: .leading)
 
-            if !currentPageItems.isEmpty {
+            if !pagedItems.isEmpty {
                 Capsule()
                     .fill(Color.white.opacity(0.2))
                     .frame(width: 1.5, height: 18)
             }
 
-            ZStack {
-                HStack(spacing: SpaceBarConstants.iconSpacing) {
-                    ForEach(currentPageItems) { item in
-                        Image(nsImage: item.icon)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: SpaceBarConstants.iconSize, height: SpaceBarConstants.iconSize)
-                            .opacity(item.isFocused ? 1 : 0.7)
+            // Icon strip viewport
+            HStack(spacing: 0) {
+                ForEach(pagedItems.indices, id: \.self) { pageIndex in
+                    HStack(spacing: SpaceBarConstants.iconSpacing) {
+                        ForEach(pagedItems[pageIndex]) { item in
+                            Image(nsImage: item.icon)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: SpaceBarConstants.iconSize - 6, height: SpaceBarConstants.iconSize - 6)
+                                .padding(3)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .fill(item.isFocused ? Color.white.opacity(0.2) : Color.clear)
+                                )
+                                .opacity(item.isFocused ? 1 : 0.7)
+                        }
                     }
+                    .frame(width: iconViewportWidth, alignment: .leading)
                 }
-                .id(currentPage)
-                .transition(pageState.swipeDirection.transition)
             }
+            .offset(x: pageStripOffset)
+            .frame(width: iconViewportWidth, alignment: .leading)
             .clipped()
 
             if totalPages > 1 {

@@ -9,6 +9,7 @@ final class SpaceEngine: ObservableObject {
     private let windowListProvider: WindowListProvider
     private var cancellables = Set<AnyCancellable>()
     private var refreshWorkItem: DispatchWorkItem?
+    private var followUpWorkItem: DispatchWorkItem?
     private var pendingSpaceCommitWorkItem: DispatchWorkItem?
     private var confirmedSpace: ActiveSpace?
     private var previousConfirmedSpace: ActiveSpace?
@@ -42,6 +43,7 @@ final class SpaceEngine: ObservableObject {
     deinit {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         refreshWorkItem?.cancel()
+        followUpWorkItem?.cancel()
         pendingSpaceCommitWorkItem?.cancel()
     }
 
@@ -102,7 +104,7 @@ final class SpaceEngine: ObservableObject {
     private func observeWorkspaceNotifications() {
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
-            selector: #selector(activeAppDidChange),
+            selector: #selector(activeAppDidChange(_:)),
             name: NSWorkspace.didActivateApplicationNotification,
             object: nil
         )
@@ -122,23 +124,54 @@ final class SpaceEngine: ObservableObject {
         )
     }
 
-    @objc private func activeAppDidChange() {
-        scheduleRefresh(reason: "frontmost_app_changed", delay: 0.0)
+    @objc private func activeAppDidChange(_ notification: Notification) {
+        let activatedBundleID = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+            .bundleIdentifier
+        scheduleRefresh(
+            reason: "frontmost_app_changed",
+            delay: 0.0,
+            preferredFocusedBundleID: activatedBundleID
+        )
+
+        followUpWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.scheduleRefresh(
+                reason: "frontmost_app_changed_followup",
+                delay: 0.0,
+                preferredFocusedBundleID: activatedBundleID
+            )
+        }
+        followUpWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
     }
 
     @objc private func appListDidChange() {
-        scheduleRefresh(reason: "workspace_app_list_changed", delay: 0.25)
+        scheduleRefresh(reason: "workspace_app_list_changed", delay: 0.1)
+        followUpWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.scheduleRefresh(reason: "workspace_app_list_changed_followup", delay: 0.0)
+        }
+        followUpWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     // MARK: - Refresh Scheduling
 
-    private func scheduleRefresh(reason: String, delay: TimeInterval) {
+    private func scheduleRefresh(
+        reason: String,
+        delay: TimeInterval,
+        preferredFocusedBundleID: String? = nil
+    ) {
         refreshWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             let activeSpace = self.confirmedSpace ?? self.spaceMonitor.currentSpace
             guard activeSpace.id != 0 else { return }
-            self.captureSnapshot(reason: reason, activeSpace: activeSpace)
+            self.captureSnapshot(
+                reason: reason,
+                activeSpace: activeSpace,
+                preferredFocusedBundleID: preferredFocusedBundleID
+            )
         }
         refreshWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
@@ -177,15 +210,22 @@ final class SpaceEngine: ObservableObject {
     // MARK: - Snapshot Capture
 
     /// Captures a snapshot. Must be called on the main thread so ignoredApps is read safely.
-    private func captureSnapshot(reason: String, activeSpace: ActiveSpace) {
+    private func captureSnapshot(
+        reason: String,
+        activeSpace: ActiveSpace,
+        preferredFocusedBundleID: String? = nil
+    ) {
         assert(Thread.isMainThread, "captureSnapshot must be called on main thread")
 
         let label = configManager.spaceLabels[activeSpace.ordinal] ?? "Untitled"
-        let focusedBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let focusedBundleID = preferredFocusedBundleID ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         // Capture ignoredApps on main thread to avoid data race
         let ignoredApps = configManager.ignoredApps
 
-        swLog("FETCH", "started reason=\(reason) ordinal=\(activeSpace.ordinal) id=\(activeSpace.id) label=\(label)")
+        swLog(
+            "FETCH",
+            "started reason=\(reason) ordinal=\(activeSpace.ordinal) id=\(activeSpace.id) label=\(label) focusedBundleID=\(focusedBundleID ?? "nil")"
+        )
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }

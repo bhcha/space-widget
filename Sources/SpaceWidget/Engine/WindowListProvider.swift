@@ -29,7 +29,8 @@ final class WindowListProvider {
             return []
         }
 
-        // Map pid -> (bundleID, name, windowCount)
+        // Map pid -> (bundleID, name, windowCount); seenPIDs tracks first-seen z-order
+        var seenPIDs: [pid_t] = []
         var pidInfo: [pid_t: (bundleID: String, name: String, windowCount: Int)] = [:]
 
         for window in windowList {
@@ -45,6 +46,7 @@ final class WindowListProvider {
                 existing.windowCount += 1
                 pidInfo[pid] = existing
             } else {
+                seenPIDs.append(pid)
                 // Try to get bundle ID from running application
                 if let app = NSRunningApplication(processIdentifier: pid) {
                     let bundleID = app.bundleIdentifier ?? "pid.\(pid)"
@@ -58,7 +60,8 @@ final class WindowListProvider {
         // Deduplicate by bundle ID (keep entry with highest window count if same bundle)
         var byBundle: [String: (pid: pid_t, name: String, windowCount: Int)] = [:]
 
-        for (pid, info) in pidInfo {
+        for pid in seenPIDs {
+            guard let info = pidInfo[pid] else { continue }
             if let existing = byBundle[info.bundleID] {
                 if info.windowCount > existing.windowCount {
                     byBundle[info.bundleID] = (pid: pid, name: info.name, windowCount: info.windowCount)
@@ -68,27 +71,34 @@ final class WindowListProvider {
             }
         }
 
-        // Build DockItems
+        // Build DockItems in first-seen z-order (frontmost first)
         var items: [DockItem] = []
+        var addedBundles = Set<String>()
 
-        for (bundleID, info) in byBundle {
-            let icon = resolveIcon(bundleID: bundleID, pid: info.pid)
-            let isFocused = bundleID == focusedBundleID
+        for pid in seenPIDs {
+            guard let info = pidInfo[pid] else { continue }
+            guard !addedBundles.contains(info.bundleID) else { continue }
+            addedBundles.insert(info.bundleID)
+            guard let bundleEntry = byBundle[info.bundleID] else { continue }
+            let icon = resolveIcon(bundleID: info.bundleID, pid: bundleEntry.pid)
+            let isFocused = info.bundleID == focusedBundleID
 
             let item = DockItem(
-                id: bundleID,
-                name: info.name,
+                id: info.bundleID,
+                name: bundleEntry.name,
                 icon: icon,
-                pid: info.pid,
-                windowCount: info.windowCount,
+                pid: bundleEntry.pid,
+                windowCount: bundleEntry.windowCount,
                 isFocused: isFocused
             )
             items.append(item)
         }
 
-        // Sort alphabetically (stable default order; ViewModel handles user reordering)
+        // Sort by launch date (oldest first = stable launch order)
         items.sort { lhs, rhs in
-            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            let lhsDate = NSRunningApplication(processIdentifier: lhs.pid)?.launchDate ?? .distantPast
+            let rhsDate = NSRunningApplication(processIdentifier: rhs.pid)?.launchDate ?? .distantPast
+            return lhsDate < rhsDate
         }
 
         // Max 20 items

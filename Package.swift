@@ -9,7 +9,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "SpaceWidget",
-            path: "Sources/SpaceWidget"
+            path: "Sources/SpaceWidget",
+            resources: [
+                .process("Resources")
+            ]
         )
     ]
 )

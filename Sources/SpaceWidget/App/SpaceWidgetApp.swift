@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var spaceEngine: SpaceEngine?
     private var stateWriter: StateWriter?
     private var panelController: SpacePanelController?
+    private var menuBarController: MenuBarController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let configManager = ConfigManager()
@@ -16,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.spaceEngine = spaceEngine
         self.stateWriter = stateWriter
         self.panelController = SpacePanelController(spaceEngine: spaceEngine)
+        self.menuBarController = MenuBarController()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

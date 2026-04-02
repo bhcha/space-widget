@@ -19,17 +19,28 @@ final class SpacePanelController {
 
     init(spaceEngine: SpaceEngine) {
         self.spaceEngine = spaceEngine
-        setupPanel()
-        observeScreenChanges()
-        observeEngine()
+        DispatchQueue.main.async { [weak self] in
+            self?.setupPanel()
+            self?.observeScreenChanges()
+            self?.observeEngine()
+        }
     }
 
-    private func setupPanel() {
-        guard let screenFrame = NSScreen.main?.frame else { return }
+    private func setupPanel(retryCount: Int = 0) {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else {
+            guard retryCount < 10 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.setupPanel(retryCount: retryCount + 1)
+            }
+            return
+        }
+        let screenFrame = screen.frame
 
         let snapshot = spaceEngine.snapshot
         let initialView = makeSpaceBarView(from: snapshot)
         let hostingView = NSHostingView(rootView: initialView)
+        hostingView.frame = screenFrame
+        hostingView.autoresizingMask = [.width, .height]
         self.hostingView = hostingView
 
         let panel = SpacePanel(
@@ -40,7 +51,7 @@ final class SpacePanelController {
         )
 
         panel.contentView = hostingView
-        panel.orderFront(nil)
+        panel.orderFrontRegardless()
 
         self.panel = panel
     }
@@ -74,7 +85,9 @@ final class SpacePanelController {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self = self, let panel = self.panel, let screen = panel.screen else { return }
+            guard let self = self, let panel = self.panel else { return }
+            let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens.first
+            guard let screen else { return }
             panel.setFrame(screen.frame, display: true)
         }
     }

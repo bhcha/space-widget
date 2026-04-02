@@ -6,6 +6,16 @@ enum SpaceBarConstants {
     static let iconsPerPage = 5
     static let iconSize: CGFloat = 39
     static let iconSpacing: CGFloat = 9
+    static let leftPadding: CGFloat = 8
+    static let bottomPadding: CGFloat = 6
+    static let barHeight: CGFloat = 45
+    static let horizontalPadding: CGFloat = 18
+    static let sectionSpacing: CGFloat = 15
+    static let spaceNumberWidth: CGFloat = 32
+    static let labelWidth: CGFloat = 74
+    static let separatorWidth: CGFloat = 1.5
+    static let pageDotSize: CGFloat = 4
+    static let pageDotSpacing: CGFloat = 3
 }
 
 final class SpaceBarPageState: ObservableObject {
@@ -77,33 +87,11 @@ struct SpaceBarView: View {
         ZStack(alignment: .bottomLeading) {
             Color.clear
                 .allowsHitTesting(false)
-            barContent
-                .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .gesture(
-                    DragGesture(minimumDistance: 15)
-                        .updating($dragOffset) { value, state, transaction in
-                            state = value.translation.width
-                            transaction.animation = nil // no animation during drag — track finger 1:1
-                        }
-                        .onEnded { value in
-                            let threshold: CGFloat = iconViewportWidth * 0.3
-                            let projected = value.predictedEndTranslation.width
-
-                            if projected < -threshold {
-                                withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.8)) {
-                                    pageState.goToNextPage(totalPages: totalPages)
-                                }
-                            } else if projected > threshold {
-                                withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.8)) {
-                                    pageState.goToPreviousPage()
-                                }
-                            }
-                        }
-                )
-                .animation(.smooth(duration: 0.3), value: items.map(\.id))
-                .padding(.leading, 8)
-                .padding(.bottom, 6)
+            interactiveBarContent
+                .padding(.leading, SpaceBarConstants.leftPadding)
+                .padding(.bottom, SpaceBarConstants.bottomPadding)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         .edgesIgnoringSafeArea(.all)
         .onChange(of: totalPages) { _, newTotal in
             pageState.clampPage(totalPages: newTotal)
@@ -115,26 +103,53 @@ struct SpaceBarView: View {
         app.activate(options: [.activateAllWindows])
     }
 
+    private var interactiveBarContent: some View {
+        barContent
+            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .gesture(
+                DragGesture(minimumDistance: 15)
+                    .updating($dragOffset) { value, state, transaction in
+                        state = value.translation.width
+                        transaction.animation = nil // no animation during drag — track finger 1:1
+                    }
+                    .onEnded { value in
+                        let threshold: CGFloat = iconViewportWidth * 0.3
+                        let projected = value.predictedEndTranslation.width
+
+                        if projected < -threshold {
+                            withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.8)) {
+                                pageState.goToNextPage(totalPages: totalPages)
+                            }
+                        } else if projected > threshold {
+                            withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.8)) {
+                                pageState.goToPreviousPage()
+                            }
+                        }
+                    }
+            )
+            .animation(.smooth(duration: 0.3), value: items.map(\.id))
+    }
+
     private var barContent: some View {
-        HStack(spacing: 15) {
+        HStack(spacing: SpaceBarConstants.sectionSpacing) {
             Text(spaceNumber)
                 .font(.system(size: 14, weight: .medium, design: .rounded))
                 .foregroundColor(.white.opacity(0.9))
-                .frame(width: 32, alignment: .center)
+                .frame(width: SpaceBarConstants.spaceNumberWidth, alignment: .center)
 
             Button(action: onEditLabel) {
                 Text(spaceLabel)
                     .font(.system(size: 11, weight: .regular))
                     .foregroundColor(.white.opacity(0.55))
                     .lineLimit(1)
-                    .frame(width: 74, alignment: .leading)
+                    .frame(width: SpaceBarConstants.labelWidth, alignment: .leading)
             }
             .buttonStyle(.plain)
 
             if !pagedItems.isEmpty {
                 Capsule()
                     .fill(Color.white.opacity(0.2))
-                    .frame(width: 1.5, height: 18)
+                    .frame(width: SpaceBarConstants.separatorWidth, height: 18)
             }
 
             // Icon strip viewport
@@ -169,13 +184,13 @@ struct SpaceBarView: View {
                     ForEach(0..<totalPages, id: \.self) { page in
                         Circle()
                             .fill(Color.white.opacity(page == currentPage ? 0.8 : 0.25))
-                            .frame(width: 4, height: 4)
+                            .frame(width: SpaceBarConstants.pageDotSize, height: SpaceBarConstants.pageDotSize)
                     }
                 }
             }
         }
-        .padding(.horizontal, 18)
-        .frame(height: 45)
+        .padding(.horizontal, SpaceBarConstants.horizontalPadding)
+        .frame(height: SpaceBarConstants.barHeight)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color.black.opacity(0.55))

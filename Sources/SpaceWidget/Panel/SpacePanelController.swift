@@ -55,11 +55,7 @@ final class SpacePanelController {
         spaceEngine.$snapshot
             .receive(on: DispatchQueue.main)
             .sink { [weak self] snapshot in
-                swLog("NAV", "sink fired reason=snapshot_changed apps=\(snapshot.items.count) focused=\(snapshot.focusedBundleID ?? "nil")")
-                guard let self = self, let hostingView = self.hostingView else {
-                    swLog("NAV", "sink guard failed self=\(self == nil ? "nil" : "ok") hostingView=\(self?.hostingView == nil ? "nil" : "ok")")
-                    return
-                }
+                guard let self = self, let hostingView = self.hostingView else { return }
                 if snapshot.spaceID != self.lastSpaceID {
                     self.pageState.reset()
                     self.lastSpaceID = snapshot.spaceID
@@ -73,17 +69,12 @@ final class SpacePanelController {
                 )
 
                 // Auto-navigate to the page containing the focused app
-                let focusedID = snapshot.focusedBundleID ?? "nil"
-                let currentPage = self.pageState.currentPage
                 if let focusedBundleID = snapshot.focusedBundleID,
                    let focusedIndex = snapshot.items.firstIndex(where: { $0.id == focusedBundleID }) {
                     let targetPage = focusedIndex / SpaceBarConstants.iconsPerPage
-                    swLog("NAV", "focusedBundleID=\(focusedID) focusedIndex=\(focusedIndex) targetPage=\(targetPage) currentPage=\(currentPage)")
                     if targetPage != self.pageState.currentPage {
                         self.pageState.goToPage(targetPage)
                     }
-                } else {
-                    swLog("NAV", "focusedBundleID=\(focusedID) focusedIndex=nil currentPage=\(currentPage)")
                 }
             }
             .store(in: &cancellables)

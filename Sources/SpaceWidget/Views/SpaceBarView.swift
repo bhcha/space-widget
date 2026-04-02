@@ -109,6 +109,11 @@ struct SpaceBarView: View {
         }
     }
 
+    private func activateApp(bundleID: String) {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else { return }
+        app.activate(options: [.activateAllWindows])
+    }
+
     private var barContent: some View {
         HStack(spacing: 15) {
             Text(spaceNumber)
@@ -143,6 +148,9 @@ struct SpaceBarView: View {
                                         .fill(item.isFocused ? Color.white.opacity(0.2) : Color.clear)
                                 )
                                 .opacity(item.isFocused ? 1 : 0.7)
+                                .onTapGesture {
+                                    activateApp(bundleID: item.id)
+                                }
                         }
                     }
                     .frame(width: iconViewportWidth, alignment: .leading)

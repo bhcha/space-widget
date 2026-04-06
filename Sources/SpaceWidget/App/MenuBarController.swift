@@ -1,9 +1,12 @@
 import AppKit
 
-final class MenuBarController: NSObject {
+final class MenuBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
+    private let autoHideManager: AutoHideManager
+    private var autoHideItem: NSMenuItem?
 
-    override init() {
+    init(autoHideManager: AutoHideManager) {
+        self.autoHideManager = autoHideManager
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
         configureStatusItem()
@@ -18,6 +21,19 @@ final class MenuBarController: NSObject {
 
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.delegate = self
+
+        let autoHideItem = NSMenuItem(
+            title: "Auto Hide",
+            action: #selector(toggleAutoHide),
+            keyEquivalent: ""
+        )
+        autoHideItem.target = self
+        autoHideItem.state = autoHideManager.isEnabled ? .on : .off
+        menu.addItem(autoHideItem)
+        self.autoHideItem = autoHideItem
+
+        menu.addItem(NSMenuItem.separator())
 
         let quitItem = NSMenuItem(
             title: "Quit SpaceWidget",
@@ -29,6 +45,20 @@ final class MenuBarController: NSObject {
 
         statusItem.menu = menu
     }
+
+    // MARK: - NSMenuDelegate
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        autoHideItem?.state = autoHideManager.isEnabled ? .on : .off
+    }
+
+    // MARK: - Actions
+
+    @objc private func toggleAutoHide() {
+        autoHideManager.toggle()
+    }
+
+    // MARK: - Icon
 
     private func loadMenuBarIcon() -> NSImage? {
         guard let url = Bundle.module.url(forResource: "icon", withExtension: "png"),

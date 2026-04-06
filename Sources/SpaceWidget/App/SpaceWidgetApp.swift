@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var stateWriter: StateWriter?
     private var panelController: SpacePanelController?
     private var menuBarController: MenuBarController?
+    private var autoHideManager: AutoHideManager?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let configManager = ConfigManager()
@@ -13,11 +14,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let stateWriter = StateWriter()
         stateWriter.subscribe(to: spaceEngine.$snapshot)
 
+        let autoHideManager = AutoHideManager()
+
         self.configManager = configManager
         self.spaceEngine = spaceEngine
         self.stateWriter = stateWriter
-        self.panelController = SpacePanelController(spaceEngine: spaceEngine)
-        self.menuBarController = MenuBarController()
+        self.autoHideManager = autoHideManager
+        self.panelController = SpacePanelController(spaceEngine: spaceEngine, autoHideManager: autoHideManager)
+        self.menuBarController = MenuBarController(autoHideManager: autoHideManager)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

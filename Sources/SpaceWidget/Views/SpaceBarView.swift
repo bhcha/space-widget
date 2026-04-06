@@ -50,6 +50,7 @@ struct SpaceBarView: View {
     let spaceLabel: String
     let items: [DockItem]
     let totalItemCount: Int
+    let isBarVisible: Bool
     let onEditLabel: () -> Void
 
     @ObservedObject var pageState: SpaceBarPageState
@@ -90,6 +91,9 @@ struct SpaceBarView: View {
             interactiveBarContent
                 .padding(.leading, SpaceBarConstants.leftPadding)
                 .padding(.bottom, SpaceBarConstants.bottomPadding)
+                .offset(y: isBarVisible ? 0 : SpaceBarConstants.barHeight + SpaceBarConstants.bottomPadding + 10)
+                .animation(.easeInOut(duration: 0.25), value: isBarVisible)
+                .allowsHitTesting(isBarVisible)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         .edgesIgnoringSafeArea(.all)

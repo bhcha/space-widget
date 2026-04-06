@@ -6,10 +6,13 @@ final class SpacePanelController {
     private var panel: SpacePanel?
     private var hostingView: NSHostingView<SpaceBarView>?
     private let spaceEngine: SpaceEngine
+    private let autoHideManager: AutoHideManager
     private let pageState = SpaceBarPageState()
     private var cancellables = Set<AnyCancellable>()
     private var screenObserver: NSObjectProtocol?
     private var lastSpaceID: UInt64? = nil
+    private var hideWorkItem: DispatchWorkItem?
+    private var hotZoneView: HotZoneView?
 
     deinit {
         if let screenObserver = screenObserver {
@@ -17,12 +20,14 @@ final class SpacePanelController {
         }
     }
 
-    init(spaceEngine: SpaceEngine) {
+    init(spaceEngine: SpaceEngine, autoHideManager: AutoHideManager) {
         self.spaceEngine = spaceEngine
+        self.autoHideManager = autoHideManager
         DispatchQueue.main.async { [weak self] in
             self?.setupPanel()
             self?.observeScreenChanges()
             self?.observeEngine()
+            self?.observeAutoHide()
         }
     }
 
@@ -50,11 +55,74 @@ final class SpacePanelController {
             defer: false
         )
 
-        panel.contentView = hostingView
+        let container = NSView(frame: screenFrame)
+        container.autoresizingMask = [.width, .height]
+
+        hostingView.frame = screenFrame
+        container.addSubview(hostingView)
+
+        let hotZoneView = HotZoneView(frame: CGRect(x: 0, y: 0, width: 450, height: 61))
+        hotZoneView.onMouseEntered = { [weak self] in
+            self?.handleMouseEnteredHotZone()
+        }
+        hotZoneView.onMouseExited = { [weak self] in
+            self?.handleMouseExitedHotZone()
+        }
+        container.addSubview(hotZoneView)
+        self.hotZoneView = hotZoneView
+
+        panel.contentView = container
         panel.orderFrontRegardless()
 
         self.panel = panel
     }
+
+    // MARK: - Mouse Handlers
+
+    private func handleMouseEnteredHotZone() {
+        hideWorkItem?.cancel()
+        hideWorkItem = nil
+        if autoHideManager.isEnabled && !autoHideManager.isBarVisible {
+            autoHideManager.showBar()
+            updateBarView()
+        }
+    }
+
+    private func handleMouseExitedHotZone() {
+        guard autoHideManager.isEnabled && autoHideManager.isBarVisible else { return }
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.autoHideManager.hideBar()
+            self.updateBarView()
+        }
+        hideWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
+    }
+
+    // MARK: - AutoHide Observer
+
+    private func observeAutoHide() {
+        autoHideManager.$isEnabled
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in
+                guard let self = self else { return }
+                if !enabled {
+                    self.hideWorkItem?.cancel()
+                    self.hideWorkItem = nil
+                }
+                self.updateBarView()
+            }
+            .store(in: &cancellables)
+
+        autoHideManager.$isBarVisible
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateBarView()
+            }
+            .store(in: &cancellables)
+    }
+
+    // MARK: - Engine Observer
 
     private func observeEngine() {
         spaceEngine.$snapshot
@@ -92,12 +160,20 @@ final class SpacePanelController {
         }
     }
 
+    // MARK: - View Helpers
+
+    private func updateBarView() {
+        guard let hostingView = self.hostingView else { return }
+        hostingView.rootView = makeSpaceBarView(from: spaceEngine.snapshot)
+    }
+
     private func makeSpaceBarView(from snapshot: DockSnapshot) -> SpaceBarView {
         SpaceBarView(
             spaceNumber: "\(snapshot.spaceNumber)",
             spaceLabel: snapshot.spaceLabel,
             items: snapshot.items,
             totalItemCount: snapshot.items.count,
+            isBarVisible: !autoHideManager.isEnabled || autoHideManager.isBarVisible,
             onEditLabel: { [weak self] in
                 self?.promptForSpaceLabelEdit(snapshot: snapshot)
             },
@@ -126,4 +202,25 @@ final class SpacePanelController {
             label: textField.stringValue
         )
     }
+}
+
+// MARK: - HotZoneView
+
+private final class HotZoneView: NSView {
+    var onMouseEntered: (() -> Void)?
+    var onMouseExited: (() -> Void)?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways],
+            owner: self
+        )
+        addTrackingArea(area)
+    }
+
+    override func mouseEntered(with event: NSEvent) { onMouseEntered?() }
+    override func mouseExited(with event: NSEvent) { onMouseExited?() }
 }

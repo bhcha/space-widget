@@ -35,3 +35,34 @@ func CGSCurrentSpaceID() -> UInt64 {
     }
     return CGSManagedDisplayGetCurrentSpace(cid, "Main" as CFString)
 }
+
+/// Enumerate AX windows of an app that exist on the current space.
+/// - Parameters:
+///   - pid: The process ID
+///   - singleSpaceOnly: If true, skips windows assigned to multiple spaces (sticky windows)
+///   - body: Called for each matching window. Return `true` to stop early.
+func forEachWindowOnCurrentSpace(
+    pid: pid_t,
+    singleSpaceOnly: Bool = false,
+    body: (_ appElement: AXUIElement, _ axWindow: AXUIElement, _ wid: CGWindowID) -> Bool
+) {
+    let appElement = AXUIElementCreateApplication(pid)
+    var windowsRef: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+          let axWindows = windowsRef as? [AXUIElement] else { return }
+
+    let cid = CGSMainConnectionID()
+    let currentSpaceID = CGSCurrentSpaceID()
+
+    for axWindow in axWindows {
+        var wid: CGWindowID = 0
+        guard _AXUIElementGetWindow(axWindow, &wid) == .success else { continue }
+
+        guard let spaces = CGSCopySpacesForWindows(cid, 0x7, [wid] as CFArray) as? [UInt64],
+              spaces.contains(currentSpaceID),
+              !singleSpaceOnly || spaces.count == 1
+        else { continue }
+
+        if body(appElement, axWindow, wid) { return }
+    }
+}

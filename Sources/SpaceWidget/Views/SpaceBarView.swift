@@ -105,34 +105,28 @@ struct SpaceBarView: View {
     /// Activate a specific window on the current space via AXUIElement,
     /// avoiding NSRunningApplication.activate which can jump to another space.
     private func activateApp(pid: pid_t) {
-        let appElement = AXUIElementCreateApplication(pid)
-        var windowsRef: CFTypeRef?
-        let axResult = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
-        guard axResult == .success, let axWindows = windowsRef as? [AXUIElement] else {
-            swLog("ACTIVATE", "AXWindows failed error=\(axResult.rawValue) pid=\(pid)")
-            return
-        }
-
-        let cid = CGSMainConnectionID()
-        let currentSpaceID = CGSCurrentSpaceID()
-
-        for axWindow in axWindows {
-            var wid: CGWindowID = 0
-            guard _AXUIElementGetWindow(axWindow, &wid) == .success else { continue }
-
-            guard let spaces = CGSCopySpacesForWindows(cid, 0x7, [wid] as CFArray) as? [UInt64],
-                  spaces.contains(currentSpaceID)
-            else { continue }
-
+        forEachWindowOnCurrentSpace(pid: pid) { appElement, axWindow, wid in
             let raiseResult = AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
             let frontResult = AXUIElementSetAttributeValue(appElement, kAXFrontmostAttribute as CFString, kCFBooleanTrue as CFTypeRef)
             if raiseResult == .success && frontResult == .success {
-                return
+                return true // stop — activated successfully
             }
             swLog("ACTIVATE", "AXAction failed pid=\(pid) wid=\(wid) raise=\(raiseResult.rawValue) front=\(frontResult.rawValue), trying next window")
+            return false
         }
+    }
 
-        swLog("ACTIVATE", "no current-space window found for pid=\(pid)")
+    /// Close only the windows of an app on the current space.
+    /// Windows on other spaces or pinned to all spaces remain open; the app keeps running.
+    private func closeWindowsOnCurrentSpace(pid: pid_t) {
+        forEachWindowOnCurrentSpace(pid: pid, singleSpaceOnly: true) { _, axWindow, _ in
+            var closeButtonRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(axWindow, kAXCloseButtonAttribute as CFString, &closeButtonRef) == .success,
+                  let closeButtonRef else { return false }
+            // swiftlint:disable:next force_cast
+            AXUIElementPerformAction(closeButtonRef as! AXUIElement, kAXPressAction as CFString)
+            return false // continue — close all matching windows
+        }
     }
 
     private var interactiveBarContent: some View {
@@ -201,6 +195,15 @@ struct SpaceBarView: View {
                                 .opacity(item.isFocused ? 1 : 0.7)
                                 .onTapGesture {
                                     activateApp(pid: item.pid)
+                                }
+                                .contextMenu {
+                                    Button("Close from this Space") {
+                                        closeWindowsOnCurrentSpace(pid: item.pid)
+                                    }
+                                    Divider()
+                                    Button("Quit \(item.name)") {
+                                        NSRunningApplication(processIdentifier: item.pid)?.terminate()
+                                    }
                                 }
                         }
                     }

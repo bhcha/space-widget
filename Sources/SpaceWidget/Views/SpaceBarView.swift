@@ -102,6 +102,29 @@ struct SpaceBarView: View {
         }
     }
 
+    /// Restore a hidden or minimized app and activate it on the current space.
+    private func restoreAndActivateOnCurrentSpace(pid: pid_t) {
+        let appElement = AXUIElementCreateApplication(pid)
+
+        // Unhide if the app is hidden
+        AXUIElementSetAttributeValue(appElement, kAXHiddenAttribute as CFString, kCFBooleanFalse)
+
+        // Unminimize windows on the current space
+        forEachWindowOnCurrentSpace(pid: pid) { _, axWindow, _ in
+            var minRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axWindow, kAXMinimizedAttribute as CFString, &minRef) == .success,
+               (minRef as? Bool) == true {
+                AXUIElementSetAttributeValue(axWindow, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+            }
+            return false // continue — unminimize all windows on this space
+        }
+
+        // Small delay to let restore take effect before raising
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            activateApp(pid: pid)
+        }
+    }
+
     /// Activate a specific window on the current space via AXUIElement,
     /// avoiding NSRunningApplication.activate which can jump to another space.
     private func activateApp(pid: pid_t) {
@@ -274,9 +297,13 @@ struct SpaceBarView: View {
                                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                                         .fill(item.isFocused ? Color.white.opacity(0.2) : Color.clear)
                                 )
-                                .opacity(item.isFocused ? 1 : 0.7)
+                                .opacity(item.isHidden ? 0.3 : (item.isFocused ? 1 : 0.7))
                                 .onTapGesture {
-                                    activateApp(pid: item.pid)
+                                    if item.isHidden {
+                                        restoreAndActivateOnCurrentSpace(pid: item.pid)
+                                    } else {
+                                        activateApp(pid: item.pid)
+                                    }
                                 }
                                 .contextMenu {
                                     let canNewWindow = canOpenNewWindow(pid: item.pid)

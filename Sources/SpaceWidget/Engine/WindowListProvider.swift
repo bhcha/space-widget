@@ -89,16 +89,61 @@ final class WindowListProvider {
                 icon: icon,
                 pid: bundleEntry.pid,
                 windowCount: bundleEntry.windowCount,
-                isFocused: isFocused
+                isFocused: isFocused,
+                isHidden: false
             )
             items.append(item)
         }
 
+        // Second pass: find hidden/minimized apps not in the on-screen list.
+        // An app is "invisible" if it has AX windows on the current space that are
+        // either all minimized or all off-screen (hidden). This works even when
+        // NSRunningApplication.isHidden returns false (Electron apps).
+        let visibleBundleIDs = Set(items.map(\.id))
+        let onScreenPIDs = Set(seenPIDs)
+
+        let candidateApps = NSWorkspace.shared.runningApplications.filter { app in
+            guard app.activationPolicy == .regular,
+                  !app.isTerminated,
+                  let bundleID = app.bundleIdentifier,
+                  !visibleBundleIDs.contains(bundleID),
+                  let name = app.localizedName,
+                  !filteredAppNames.contains(name)
+            else { return false }
+            return !onScreenPIDs.contains(app.processIdentifier)
+        }
+
+        for app in candidateApps {
+            let pid = app.processIdentifier
+            var windowCount = 0
+            forEachWindowOnCurrentSpace(pid: pid) { _, _, _ in
+                windowCount += 1
+                return false // continue — count all windows
+            }
+            guard windowCount > 0 else { continue }
+
+            let bundleID = app.bundleIdentifier ?? "pid.\(pid)"
+            let icon = resolveIcon(bundleID: bundleID, pid: pid)
+            items.append(DockItem(
+                id: bundleID,
+                name: app.localizedName ?? "Unknown",
+                icon: icon,
+                pid: pid,
+                windowCount: windowCount,
+                isFocused: false,
+                isHidden: true
+            ))
+        }
+
         // Sort by launch date (oldest first = stable launch order)
+        // Cache launchDate to avoid repeated NSRunningApplication lookups in sort comparisons
+        let launchDates: [pid_t: Date] = items.reduce(into: [:]) { dict, item in
+            if dict[item.pid] == nil {
+                dict[item.pid] = NSRunningApplication(processIdentifier: item.pid)?.launchDate ?? .distantPast
+            }
+        }
         items.sort { lhs, rhs in
-            let lhsDate = NSRunningApplication(processIdentifier: lhs.pid)?.launchDate ?? .distantPast
-            let rhsDate = NSRunningApplication(processIdentifier: rhs.pid)?.launchDate ?? .distantPast
-            return lhsDate < rhsDate
+            (launchDates[lhs.pid] ?? .distantPast) < (launchDates[rhs.pid] ?? .distantPast)
         }
 
         // Max 20 items

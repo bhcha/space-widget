@@ -122,6 +122,20 @@ final class SpaceEngine: ObservableObject {
             name: NSWorkspace.didTerminateApplicationNotification,
             object: nil
         )
+
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(appVisibilityDidChange),
+            name: NSWorkspace.didHideApplicationNotification,
+            object: nil
+        )
+
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(appVisibilityDidChange),
+            name: NSWorkspace.didUnhideApplicationNotification,
+            object: nil
+        )
     }
 
     @objc private func activeAppDidChange(_ notification: Notification) {
@@ -143,6 +157,10 @@ final class SpaceEngine: ObservableObject {
         }
         followUpWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+    }
+
+    @objc private func appVisibilityDidChange() {
+        scheduleRefresh(reason: "app_visibility_changed", delay: 0.0)
     }
 
     @objc private func appListDidChange() {

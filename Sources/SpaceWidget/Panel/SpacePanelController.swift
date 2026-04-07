@@ -5,6 +5,7 @@ import Combine
 final class SpacePanelController {
     private var panel: SpacePanel?
     private var hostingView: NSHostingView<SpaceBarView>?
+    private var balloonPanel: BalloonMenuPanel?
     private let spaceEngine: SpaceEngine
     private let autoHideManager: AutoHideManager
     private let configManager: ConfigManager
@@ -78,9 +79,95 @@ final class SpacePanelController {
         panel.orderFrontRegardless()
 
         self.panel = panel
+
+        panel.onRightClick = { [weak self] windowPoint in
+            self?.handleRightClick(at: windowPoint)
+        }
     }
 
     // MARK: - Mouse Handlers
+
+    private func handleRightClick(at windowPoint: NSPoint) {
+        // Suppress when bar is auto-hidden
+        if autoHideManager.isEnabled && !autoHideManager.isBarVisible { return }
+
+        // Bar occupies bottom of screen
+        let barTop = SpaceBarConstants.bottomPadding + SpaceBarConstants.barHeight
+        guard windowPoint.y <= barTop && windowPoint.y >= SpaceBarConstants.bottomPadding else { return }
+
+        // Calculate icon strip start X (mirrors hotZoneWidth layout)
+        let iconStripStartX = SpaceBarConstants.leftPadding
+            + SpaceBarConstants.horizontalPadding
+            + SpaceBarConstants.spaceNumberWidth
+            + SpaceBarConstants.sectionSpacing
+            + SpaceBarConstants.labelWidth
+            + SpaceBarConstants.sectionSpacing
+            + SpaceBarConstants.separatorWidth
+            + SpaceBarConstants.sectionSpacing
+
+        let clickX = windowPoint.x - iconStripStartX
+        guard clickX >= 0 else { return }
+
+        let iconSlotWidth = SpaceBarConstants.iconSize + SpaceBarConstants.iconSpacing
+        let slotIndex = Int(clickX / iconSlotWidth)
+
+        // Check click is within the icon area (not in spacing after the last icon)
+        let posInSlot = clickX - CGFloat(slotIndex) * iconSlotWidth
+        guard posInSlot <= SpaceBarConstants.iconSize else { return }
+
+        let iconsPerPage = configManager.iconsPerPage
+        guard slotIndex < iconsPerPage else { return }
+
+        // Calculate actual item index (accounting for paging)
+        let itemIndex = pageState.currentPage * iconsPerPage + slotIndex
+        let snapshot = spaceEngine.snapshot
+        guard itemIndex < snapshot.items.count else { return }
+        let item = snapshot.items[itemIndex]
+
+        // Calculate icon center screen position for balloon anchor
+        guard let panel = self.panel else { return }
+        let iconCenterX = iconStripStartX + CGFloat(slotIndex) * iconSlotWidth + SpaceBarConstants.iconSize / 2
+        let iconTopY = barTop
+        let screenPoint = panel.convertPoint(toScreen: NSPoint(x: iconCenterX, y: iconTopY))
+
+        showBalloonMenu(for: item, at: screenPoint)
+    }
+
+    private func showBalloonMenu(for item: DockItem, at screenPoint: NSPoint) {
+        balloonPanel?.dismiss()
+
+        let panel = BalloonMenuPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: true
+        )
+        self.balloonPanel = panel
+
+        let pid = item.pid
+        let canNew = AppActions.canOpenNewWindow(pid: pid)
+
+        let content = BalloonMenuContent(
+            itemName: item.name,
+            canNewWindow: canNew,
+            onNewWindow: { [weak self, weak panel] in
+                AppActions.openNewWindow(pid: pid)
+                panel?.dismiss()
+                self?.balloonPanel = nil
+            },
+            onCloseFromSpace: { [weak self, weak panel] in
+                AppActions.closeWindowsOnCurrentSpace(pid: pid)
+                panel?.dismiss()
+                self?.balloonPanel = nil
+            },
+            onQuit: { [weak self, weak panel] in
+                NSRunningApplication(processIdentifier: pid)?.terminate()
+                panel?.dismiss()
+                self?.balloonPanel = nil
+            }
+        )
+        panel.show(content: content, anchorScreenPoint: screenPoint)
+    }
 
     private func handleMouseEnteredHotZone() {
         hideWorkItem?.cancel()
@@ -199,6 +286,7 @@ final class SpacePanelController {
     }
 
     private func updateBarView() {
+        balloonPanel?.dismiss()
         guard let hostingView = self.hostingView else { return }
         hostingView.rootView = makeSpaceBarView(from: spaceEngine.snapshot)
     }

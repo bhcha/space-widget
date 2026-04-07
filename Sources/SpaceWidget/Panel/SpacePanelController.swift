@@ -7,6 +7,7 @@ final class SpacePanelController {
     private var hostingView: NSHostingView<SpaceBarView>?
     private let spaceEngine: SpaceEngine
     private let autoHideManager: AutoHideManager
+    private let configManager: ConfigManager
     private let pageState = SpaceBarPageState()
     private var cancellables = Set<AnyCancellable>()
     private var screenObserver: NSObjectProtocol?
@@ -23,11 +24,13 @@ final class SpacePanelController {
     init(spaceEngine: SpaceEngine, autoHideManager: AutoHideManager) {
         self.spaceEngine = spaceEngine
         self.autoHideManager = autoHideManager
+        self.configManager = spaceEngine.configManager
         DispatchQueue.main.async { [weak self] in
             self?.setupPanel()
             self?.observeScreenChanges()
             self?.observeEngine()
             self?.observeAutoHide()
+            self?.observeIconsPerPage()
         }
     }
 
@@ -61,7 +64,7 @@ final class SpacePanelController {
         hostingView.frame = screenFrame
         container.addSubview(hostingView)
 
-        let hotZoneView = HotZoneView(frame: CGRect(x: 0, y: 0, width: 450, height: 61))
+        let hotZoneView = HotZoneView(frame: CGRect(x: 0, y: 0, width: hotZoneWidth(), height: 61))
         hotZoneView.onMouseEntered = { [weak self] in
             self?.handleMouseEnteredHotZone()
         }
@@ -122,6 +125,30 @@ final class SpacePanelController {
             .store(in: &cancellables)
     }
 
+    // MARK: - Icons per Page Observer
+
+    private func observeIconsPerPage() {
+        configManager.$iconsPerPage
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                self.updateBarView()
+                self.hotZoneView?.frame.size.width = self.hotZoneWidth()
+                // Recompute page for focused app with new grouping
+                let snapshot = self.spaceEngine.snapshot
+                if let focusedBundleID = snapshot.focusedBundleID,
+                   let focusedIndex = snapshot.items.firstIndex(where: { $0.id == focusedBundleID }) {
+                    let targetPage = focusedIndex / self.configManager.iconsPerPage
+                    if targetPage != self.pageState.currentPage {
+                        self.pageState.goToPage(targetPage)
+                    }
+                }
+            }
+            .store(in: &cancellables)
+    }
+
     // MARK: - Engine Observer
 
     private func observeEngine() {
@@ -138,7 +165,7 @@ final class SpacePanelController {
                 // Auto-navigate to the page containing the focused app
                 if let focusedBundleID = snapshot.focusedBundleID,
                    let focusedIndex = snapshot.items.firstIndex(where: { $0.id == focusedBundleID }) {
-                    let targetPage = focusedIndex / SpaceBarConstants.iconsPerPage
+                    let targetPage = focusedIndex / self.configManager.iconsPerPage
                     if targetPage != self.pageState.currentPage {
                         self.pageState.goToPage(targetPage)
                     }
@@ -162,6 +189,15 @@ final class SpacePanelController {
 
     // MARK: - View Helpers
 
+    private func hotZoneWidth() -> CGFloat {
+        let count = CGFloat(configManager.iconsPerPage)
+        let iconStrip = count * SpaceBarConstants.iconSize + (count - 1) * SpaceBarConstants.iconSpacing
+        // icon strip + left sections (space number, label, separator) + padding
+        return iconStrip + SpaceBarConstants.spaceNumberWidth + SpaceBarConstants.labelWidth
+            + SpaceBarConstants.separatorWidth + SpaceBarConstants.sectionSpacing * 3
+            + SpaceBarConstants.horizontalPadding * 2 + SpaceBarConstants.leftPadding
+    }
+
     private func updateBarView() {
         guard let hostingView = self.hostingView else { return }
         hostingView.rootView = makeSpaceBarView(from: spaceEngine.snapshot)
@@ -177,6 +213,7 @@ final class SpacePanelController {
             onEditLabel: { [weak self] in
                 self?.promptForSpaceLabelEdit(snapshot: snapshot)
             },
+            iconsPerPage: configManager.iconsPerPage,
             pageState: pageState
         )
     }

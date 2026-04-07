@@ -52,6 +52,7 @@ struct SpaceBarView: View {
     let totalItemCount: Int
     let isBarVisible: Bool
     let onEditLabel: () -> Void
+    let iconsPerPage: Int
 
     @ObservedObject var pageState: SpaceBarPageState
     @GestureState private var dragOffset: CGFloat = 0
@@ -61,17 +62,17 @@ struct SpaceBarView: View {
     }
 
     private var totalPages: Int {
-        totalItemCount <= 0 ? 0 : Int(ceil(Double(totalItemCount) / Double(SpaceBarConstants.iconsPerPage)))
+        totalItemCount <= 0 ? 0 : Int(ceil(Double(totalItemCount) / Double(iconsPerPage)))
     }
 
     private var iconViewportWidth: CGFloat {
-        let count = CGFloat(SpaceBarConstants.iconsPerPage)
+        let count = CGFloat(iconsPerPage)
         return count * SpaceBarConstants.iconSize + (count - 1) * SpaceBarConstants.iconSpacing
     }
 
     private var pagedItems: [[DockItem]] {
-        stride(from: 0, to: items.count, by: SpaceBarConstants.iconsPerPage).map { start in
-            Array(items[start..<min(start + SpaceBarConstants.iconsPerPage, items.count)])
+        stride(from: 0, to: items.count, by: iconsPerPage).map { start in
+            Array(items[start..<min(start + iconsPerPage, items.count)])
         }
     }
 

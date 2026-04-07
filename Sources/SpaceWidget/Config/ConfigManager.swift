@@ -9,6 +9,9 @@ final class ConfigManager: ObservableObject {
     @Published private(set) var ignoredApps: Set<String> = []
     @Published private(set) var spaceLabels: [Int: String] = [:]
     @Published private(set) var appActions: [String: [String: String]] = [:]
+    static let iconsPerPageRange = 5...10
+    static let defaultIconsPerPage = 5
+    @Published private(set) var iconsPerPage: Int = defaultIconsPerPage
 
     // MARK: - Paths
 
@@ -34,6 +37,7 @@ final class ConfigManager: ObservableObject {
     private var ignoredAppsURL: URL { Self.configDir.appendingPathComponent("ignored_apps.json") }
     private var spaceLabelsURL: URL { Self.configDir.appendingPathComponent("space_labels.json") }
     private var appActionsURL: URL { Self.configDir.appendingPathComponent("app_actions.json") }
+    private var settingsURL: URL { Self.configDir.appendingPathComponent("settings.json") }
 
     // MARK: - Defaults
 
@@ -86,6 +90,8 @@ final class ConfigManager: ObservableObject {
         ignoredApps = loadIgnoredApps()
         spaceLabels = loadSpaceLabels()
         appActions = loadAppActions()
+        let rawIPP = loadSettings()["icons_per_page"] ?? Self.defaultIconsPerPage
+        iconsPerPage = Swift.min(Swift.max(rawIPP, Self.iconsPerPageRange.lowerBound), Self.iconsPerPageRange.upperBound)
     }
 
     func load() {
@@ -97,6 +103,8 @@ final class ConfigManager: ObservableObject {
             let ignored = self.loadIgnoredApps()
             let labels = self.loadSpaceLabels()
             let actions = self.loadAppActions()
+            let rawIPP = self.loadSettings()["icons_per_page"] ?? Self.defaultIconsPerPage
+            let ipp = Swift.min(Swift.max(rawIPP, Self.iconsPerPageRange.lowerBound), Self.iconsPerPageRange.upperBound)
 
             DispatchQueue.main.async {
                 if self.ignoredApps != ignored {
@@ -107,6 +115,9 @@ final class ConfigManager: ObservableObject {
                 }
                 if self.appActions != actions {
                     self.appActions = actions
+                }
+                if self.iconsPerPage != ipp {
+                    self.iconsPerPage = ipp
                 }
             }
         }
@@ -183,6 +194,22 @@ final class ConfigManager: ObservableObject {
         }
     }
 
+    // MARK: - Save: Settings (Icons per Page)
+
+    func saveIconsPerPage(_ count: Int) {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            let clamped = min(max(count, Self.iconsPerPageRange.lowerBound), Self.iconsPerPageRange.upperBound)
+            var settings = self.loadSettings()
+            settings["icons_per_page"] = clamped
+            guard let data = try? JSONEncoder().encode(settings) else { return }
+            self.atomicWrite(data: data, to: self.settingsURL)
+            DispatchQueue.main.async {
+                self.iconsPerPage = clamped
+            }
+        }
+    }
+
     // MARK: - Private: File Loading
 
     private func loadIgnoredApps() -> Set<String> {
@@ -213,6 +240,14 @@ final class ConfigManager: ObservableObject {
             return Self.defaultAppActions
         }
         return actions
+    }
+
+    private func loadSettings() -> [String: Int] {
+        guard let data = try? Data(contentsOf: settingsURL),
+              let settings = try? JSONDecoder().decode([String: Int].self, from: data) else {
+            return [:]
+        }
+        return settings
     }
 
     // MARK: - Private: Directory & Defaults
@@ -247,6 +282,14 @@ final class ConfigManager: ObservableObject {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             if let data = try? encoder.encode(Self.defaultAppActions) {
                 atomicWrite(data: data, to: appActionsURL)
+            }
+        }
+
+        // Create default settings.json if missing
+        if !fm.fileExists(atPath: settingsURL.path) {
+            let defaults: [String: Int] = ["icons_per_page": Self.defaultIconsPerPage]
+            if let data = try? JSONEncoder().encode(defaults) {
+                atomicWrite(data: data, to: settingsURL)
             }
         }
     }

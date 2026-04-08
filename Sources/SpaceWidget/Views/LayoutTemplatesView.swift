@@ -4,6 +4,11 @@ struct LayoutTemplatesView: View {
     @ObservedObject var store: LayoutTemplateStore
     @State private var selectedID: UUID?
 
+    // WindowAction cases available for zones (exclude minimize)
+    private var availableActions: [WindowAction] {
+        WindowAction.allCases.filter { $0 != .minimize }
+    }
+
     var body: some View {
         HSplitView {
             templateList
@@ -11,14 +16,14 @@ struct LayoutTemplatesView: View {
 
             if let template = selectedTemplate {
                 templateEditor(template)
-                    .frame(minWidth: 340)
+                    .frame(minWidth: 380)
             } else {
                 Text("Select a template")
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .frame(minHeight: 420)
+        .frame(minHeight: 600)
         .onAppear {
             if selectedID == nil {
                 selectedID = store.templates.first?.id
@@ -50,13 +55,6 @@ struct LayoutTemplatesView: View {
                 .disabled(selectedID == nil)
 
                 Spacer()
-
-                Button("Restore Presets") {
-                    store.restoreDefaults()
-                    selectedID = store.templates.first?.id
-                }
-                .font(.caption)
-                .buttonStyle(.borderless)
             }
             .padding(6)
         }
@@ -136,7 +134,7 @@ struct LayoutTemplatesView: View {
                     var updated = template
                     updated.zones.append(LayoutZone(
                         id: UUID(),
-                        rect: NormalizedRect(x: 0, y: 0, width: 0.5, height: 1),
+                        action: .leftHalf,
                         assignedAppBundleID: nil
                     ))
                     store.updateTemplate(updated)
@@ -146,6 +144,13 @@ struct LayoutTemplatesView: View {
                 .buttonStyle(.borderless)
             }
 
+            if template.zones.isEmpty {
+                Text("No zones. Click + to add a zone.")
+                    .foregroundColor(.secondary)
+                    .font(.caption)
+                    .padding(.vertical, 8)
+            }
+
             ForEach(Array(template.zones.enumerated()), id: \.element.id) { index, zone in
                 zoneRow(template: template, zone: zone, index: index)
             }
@@ -153,54 +158,52 @@ struct LayoutTemplatesView: View {
     }
 
     private func zoneRow(template: LayoutTemplate, zone: LayoutZone, index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Zone \(index + 1)")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-                Spacer()
-                if template.zones.count > 1 {
-                    Button(action: {
-                        var updated = template
-                        updated.zones.removeAll { $0.id == zone.id }
-                        store.updateTemplate(updated)
-                    }) {
-                        Image(systemName: "minus.circle")
-                            .foregroundColor(.red)
+        HStack(spacing: 8) {
+            // Zone number
+            Text("\(index + 1)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(width: 16)
+
+            // WindowAction picker with icon
+            Picker("", selection: Binding(
+                get: { zone.action },
+                set: { newAction in
+                    var updated = template
+                    if let idx = updated.zones.firstIndex(where: { $0.id == zone.id }) {
+                        updated.zones[idx].action = newAction
                     }
-                    .buttonStyle(.borderless)
+                    store.updateTemplate(updated)
+                }
+            )) {
+                ForEach(availableActions, id: \.self) { action in
+                    Label {
+                        Text(action.displayName)
+                    } icon: {
+                        WindowActionIcon(action: action)
+                    }
+                    .tag(action)
                 }
             }
+            .labelsHidden()
+            .frame(width: 160)
 
-            HStack(spacing: 8) {
-                Text("X")
-                    .frame(width: 14, alignment: .trailing)
-                    .font(.caption)
-                Slider(value: zoneRectBinding(template: template, zoneID: zone.id, keyPath: \.x), in: 0...max(0, 1 - zone.rect.width), step: 0.01)
-                Text(String(format: "%.0f%%", zone.rect.x * 100))
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 36)
-            }
+            // App picker
+            appPicker(template: template, zone: zone)
 
-            HStack(spacing: 8) {
-                Text("W")
-                    .frame(width: 14, alignment: .trailing)
-                    .font(.caption)
-                Slider(value: zoneRectBinding(template: template, zoneID: zone.id, keyPath: \.width), in: 0.1...max(0.1, 1 - zone.rect.x), step: 0.01)
-                Text(String(format: "%.0f%%", zone.rect.width * 100))
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 36)
+            // Delete button
+            Button(action: {
+                var updated = template
+                updated.zones.removeAll { $0.id == zone.id }
+                store.updateTemplate(updated)
+            }) {
+                Image(systemName: "minus.circle")
+                    .foregroundColor(.red)
             }
-
-            HStack {
-                Text("App")
-                    .frame(width: 28, alignment: .trailing)
-                    .font(.caption)
-                appPicker(template: template, zone: zone)
-            }
+            .buttonStyle(.borderless)
         }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.08)))
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))
     }
 
     private func appPicker(template: LayoutTemplate, zone: LayoutZone) -> some View {
@@ -222,7 +225,6 @@ struct LayoutTemplatesView: View {
             }
         )) {
             Text("None").tag("")
-            // Show saved bundle ID even if app is not running
             if let saved = savedBundleID, !saved.isEmpty, !runningBundleIDs.contains(saved) {
                 Text("\(saved) (not running)")
                     .tag(saved)
@@ -273,14 +275,12 @@ struct LayoutTemplatesView: View {
     }
 
     private func addTemplate() {
+        let count = store.templates.count + 1
         let newTemplate = LayoutTemplate(
             id: UUID(),
-            name: "New Layout",
+            name: "Template \(count)",
             shortcut: nil,
-            zones: [
-                LayoutZone(id: UUID(), rect: NormalizedRect(x: 0, y: 0, width: 0.5, height: 1), assignedAppBundleID: nil),
-                LayoutZone(id: UUID(), rect: NormalizedRect(x: 0.5, y: 0, width: 0.5, height: 1), assignedAppBundleID: nil),
-            ]
+            zones: []
         )
         store.addTemplate(newTemplate)
         selectedID = newTemplate.id
@@ -290,22 +290,6 @@ struct LayoutTemplatesView: View {
         guard let id = selectedID else { return }
         store.deleteTemplate(id: id)
         selectedID = store.templates.first?.id
-    }
-
-    private func zoneRectBinding(template: LayoutTemplate, zoneID: UUID, keyPath: WritableKeyPath<NormalizedRect, CGFloat>) -> Binding<CGFloat> {
-        Binding(
-            get: {
-                guard let zone = template.zones.first(where: { $0.id == zoneID }) else { return 0 }
-                return zone.rect[keyPath: keyPath]
-            },
-            set: { newValue in
-                var updated = template
-                if let idx = updated.zones.firstIndex(where: { $0.id == zoneID }) {
-                    updated.zones[idx].rect[keyPath: keyPath] = newValue
-                }
-                store.updateTemplate(updated)
-            }
-        )
     }
 
     private func spaceAssignmentBinding(ordinal: Int) -> Binding<UUID?> {

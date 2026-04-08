@@ -13,7 +13,7 @@ struct PreferencesView: View {
             LayoutTemplatesView(store: templateStore)
                 .tabItem { Label("Layouts", systemImage: "rectangle.split.3x1") }
         }
-        .frame(minWidth: 560, minHeight: 480)
+        .frame(minWidth: 580, minHeight: 660)
         .onAppear {
             shortcuts = configManager.shortcuts
         }
@@ -32,6 +32,8 @@ struct PreferencesView: View {
                     Toggle("", isOn: shortcutEnabled(for: action))
                         .toggleStyle(.checkbox)
                         .frame(width: 20)
+
+                    WindowActionIcon(action: action)
 
                     Text(action.displayName)
                         .frame(width: 140, alignment: .leading)

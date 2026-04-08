@@ -7,13 +7,16 @@ final class LayoutApplier {
 
         for zone in template.zones {
             guard let bundleID = zone.assignedAppBundleID else { continue }
-            let targetRect = zone.rect.resolve(in: screenFrame)
+
+            // Compute target rect using the same calculation as window snapping
+            let params = CalculationParams(windowFrame: screenFrame, screenFrame: screenFrame)
+            let calculation = WindowCalculationFactory.calculation(for: zone.action)
+            let result = calculation.calculate(params, action: zone.action)
+            let targetRect = result.rect
 
             if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleID }) {
-                // App already running — position its window immediately
                 positionWindow(of: app, to: targetRect)
             } else {
-                // App not running — launch and position after launch
                 launchAndPosition(bundleID: bundleID, targetRect: targetRect)
             }
         }

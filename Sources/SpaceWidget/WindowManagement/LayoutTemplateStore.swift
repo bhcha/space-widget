@@ -14,38 +14,9 @@ final class LayoutTemplateStore: ObservableObject {
     static let defaultTemplates: [LayoutTemplate] = [
         LayoutTemplate(
             id: UUID(),
-            name: "Coding",
+            name: "Template 1",
             shortcut: nil,
-            zones: [
-                LayoutZone(id: UUID(), rect: NormalizedRect(x: 0, y: 0, width: 0.667, height: 1), assignedAppBundleID: nil),
-                LayoutZone(id: UUID(), rect: NormalizedRect(x: 0.667, y: 0, width: 0.333, height: 1), assignedAppBundleID: nil),
-            ]
-        ),
-        LayoutTemplate(
-            id: UUID(),
-            name: "Communication",
-            shortcut: nil,
-            zones: [
-                LayoutZone(id: UUID(), rect: NormalizedRect(x: 0, y: 0, width: 0.5, height: 1), assignedAppBundleID: nil),
-                LayoutZone(id: UUID(), rect: NormalizedRect(x: 0.5, y: 0, width: 0.5, height: 1), assignedAppBundleID: nil),
-            ]
-        ),
-        LayoutTemplate(
-            id: UUID(),
-            name: "Research",
-            shortcut: nil,
-            zones: [
-                LayoutZone(id: UUID(), rect: NormalizedRect(x: 0, y: 0, width: 0.5, height: 1), assignedAppBundleID: nil),
-                LayoutZone(id: UUID(), rect: NormalizedRect(x: 0.5, y: 0, width: 0.5, height: 1), assignedAppBundleID: nil),
-            ]
-        ),
-        LayoutTemplate(
-            id: UUID(),
-            name: "Focus",
-            shortcut: nil,
-            zones: [
-                LayoutZone(id: UUID(), rect: NormalizedRect(x: 0, y: 0, width: 1, height: 1), assignedAppBundleID: nil),
-            ]
+            zones: []
         ),
     ]
 

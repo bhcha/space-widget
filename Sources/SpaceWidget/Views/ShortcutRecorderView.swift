@@ -8,7 +8,7 @@ struct ShortcutRecorderView: View {
 
     var body: some View {
         Button(action: { toggleRecording() }) {
-            Text(isRecording ? "Press shortcut..." : binding.displayString)
+            Text(isRecording ? "Press shortcut..." : (binding.keyCode == 0 && binding.modifiers == 0 ? "—" : binding.displayString))
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundColor(isRecording ? .accentColor : .primary)
                 .frame(width: 130, height: 24)

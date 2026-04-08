@@ -40,8 +40,9 @@ final class BalloonMenuPanel: NSPanel {
             y: anchorScreenPoint.y + 2
         )
 
-        // Clamp to screen bounds
-        if let screen = NSScreen.main {
+        // Clamp to screen bounds — use the screen containing the anchor point
+        let targetScreen = NSScreen.screens.first { $0.frame.contains(anchorScreenPoint) } ?? NSScreen.main
+        if let screen = targetScreen {
             let visibleFrame = screen.visibleFrame
             var clampedOrigin = origin
             if clampedOrigin.x < visibleFrame.minX { clampedOrigin.x = visibleFrame.minX }

@@ -17,6 +17,6 @@ struct DockItem: Identifiable, Hashable {
     }
 
     static func == (lhs: DockItem, rhs: DockItem) -> Bool {
-        lhs.id == rhs.id && lhs.isFocused == rhs.isFocused && lhs.windowCount == rhs.windowCount && lhs.name == rhs.name && lhs.isHidden == rhs.isHidden
+        lhs.id == rhs.id && lhs.pid == rhs.pid && lhs.isFocused == rhs.isFocused && lhs.windowCount == rhs.windowCount && lhs.name == rhs.name && lhs.isHidden == rhs.isHidden
     }
 }

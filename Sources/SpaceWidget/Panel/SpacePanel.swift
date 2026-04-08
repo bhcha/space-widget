@@ -28,10 +28,12 @@ final class SpacePanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     override func rightMouseDown(with event: NSEvent) {
+        swLog("PANEL", "rightMouseDown at=\(event.locationInWindow) screen=\(screen?.frame.debugDescription ?? "nil")")
         onRightClick?(event.locationInWindow)
     }
 
     override func mouseDown(with event: NSEvent) {
+        swLog("PANEL", "mouseDown at=\(event.locationInWindow) screen=\(screen?.frame.debugDescription ?? "nil")")
         if event.modifierFlags.contains(.control) {
             onRightClick?(event.locationInWindow)
         } else {

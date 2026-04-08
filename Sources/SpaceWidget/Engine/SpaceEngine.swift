@@ -17,6 +17,7 @@ final class SpaceEngine: ObservableObject {
     let configManager: ConfigManager
     let spaceMonitor: SpaceMonitor
     private let windowListProvider: WindowListProvider
+    private let windowMoveObserver = WindowMoveObserver()
     private var cancellables = Set<AnyCancellable>()
     private var refreshWorkItem: DispatchWorkItem?
     private var followUpWorkItem: DispatchWorkItem?
@@ -39,6 +40,10 @@ final class SpaceEngine: ObservableObject {
         observeSpaceChanges()
         observeConfigChanges()
         observeWorkspaceNotifications()
+
+        windowMoveObserver.onWindowMoved = { [weak self] in
+            self?.scheduleRefresh(reason: "window_moved", delay: 0.0)
+        }
     }
 
     deinit {
@@ -142,22 +147,23 @@ final class SpaceEngine: ObservableObject {
     @objc private func activeAppDidChange(_ notification: Notification) {
         let activatedBundleID = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
             .bundleIdentifier
-        scheduleRefresh(
-            reason: "frontmost_app_changed",
-            delay: 0.0,
-            preferredFocusedBundleID: activatedBundleID
-        )
 
+        // Lightweight: just update focusedBundleID in existing snapshots without full fetch
+        if !snapshots.isEmpty {
+            var updated: [String: DockSnapshot] = [:]
+            for (displayID, snapshot) in snapshots {
+                updated[displayID] = snapshot.withFocusedBundleID(activatedBundleID)
+            }
+            snapshots = updated
+        }
+
+        // Single trailing refresh to catch any window changes (e.g. app brought window forward)
         followUpWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            self?.scheduleRefresh(
-                reason: "frontmost_app_changed_followup",
-                delay: 0.0,
-                preferredFocusedBundleID: activatedBundleID
-            )
+            self?.scheduleRefresh(reason: "frontmost_app_trailing", delay: 0.0, preferredFocusedBundleID: activatedBundleID)
         }
         followUpWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
     @objc private func appVisibilityDidChange() {
@@ -238,31 +244,29 @@ final class SpaceEngine: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
+            // Build display list
+            let displayList: [(displayID: String, screenFrame: CGRect, spaceID: UInt64)] = confirmedSpacesCopy.compactMap { displayID, activeSpace in
+                guard let screen = NSScreen.screens.first(where: { displayIdentifier(for: $0) == displayID }) else { return nil }
+                return (displayID: displayID, screenFrame: screen.frame, spaceID: activeSpace.id)
+            }
+
+            // Single CGWindowListCopyWindowInfo call for all displays
+            let itemsByDisplay = self.windowListProvider.fetchItemsByDisplay(
+                displays: displayList,
+                focusedBundleID: focusedBundleID,
+                ignoredApps: ignoredApps
+            )
+
             var newSnapshots: [String: DockSnapshot] = [:]
 
             for (displayID, activeSpace) in confirmedSpacesCopy {
                 let labelKey = ConfigManager.labelKey(displayID: displayID, ordinal: activeSpace.ordinal, mainDisplayID: self.spaceMonitor.mainDisplayIdentifier)
                 let label = spaceLabels[labelKey] ?? "Untitled"
 
-                // Find matching NSScreen for this display
-                let matchingScreen = NSScreen.screens.first { screen in
-                    displayIdentifier(for: screen) == displayID
-                }
-
-                let items: [DockItem]
-                if let screen = matchingScreen {
-                    items = self.windowListProvider.fetchItems(
-                        screenFrame: screen.frame,
-                        focusedBundleID: focusedBundleID,
-                        ignoredApps: ignoredApps,
-                        spaceID: activeSpace.id
-                    )
-                } else {
-                    items = self.windowListProvider.fetchItems(
-                        focusedBundleID: focusedBundleID,
-                        ignoredApps: ignoredApps
-                    )
-                }
+                let items = itemsByDisplay[displayID] ?? self.windowListProvider.fetchItems(
+                    focusedBundleID: focusedBundleID,
+                    ignoredApps: ignoredApps
+                )
 
                 let names = items.map(\.name)
                 swLog("FETCH", "result reason=\(reason) display=\(displayID) ordinal=\(activeSpace.ordinal) count=\(names.count) apps=[\(names.joined(separator: ", "))]")
@@ -291,7 +295,10 @@ final class SpaceEngine: ObservableObject {
                 }
                 guard valid else { return }
 
-                self.snapshots = newSnapshots
+                // Semantic dedup: skip publish if content unchanged
+                if newSnapshots != self.snapshots {
+                    self.snapshots = newSnapshots
+                }
                 if !self.hasInitialSnapshot {
                     self.hasInitialSnapshot = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + self.bootstrapConfigDelay) { [weak self] in

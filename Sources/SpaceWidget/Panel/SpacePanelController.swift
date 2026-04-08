@@ -123,11 +123,17 @@ final class SpacePanelController {
 
     private func handleRightClick(at windowPoint: NSPoint, displayID: String) {
         // Suppress when bar is auto-hidden
-        if autoHideManager.isEnabled && !autoHideManager.isBarVisible { return }
+        if autoHideManager.isEnabled && !autoHideManager.isBarVisible {
+            swLog("PANEL", "rightClick suppressed: bar hidden")
+            return
+        }
 
         // Bar occupies bottom of screen
         let barTop = SpaceBarConstants.bottomPadding + SpaceBarConstants.barHeight
-        guard windowPoint.y <= barTop && windowPoint.y >= SpaceBarConstants.bottomPadding else { return }
+        guard windowPoint.y <= barTop && windowPoint.y >= SpaceBarConstants.bottomPadding else {
+            swLog("PANEL", "rightClick outside bar: y=\(windowPoint.y) barTop=\(barTop) bottomPad=\(SpaceBarConstants.bottomPadding)")
+            return
+        }
 
         // Calculate icon strip start X (mirrors hotZoneWidth layout)
         let iconStripStartX = SpaceBarConstants.leftPadding
@@ -140,23 +146,38 @@ final class SpacePanelController {
             + SpaceBarConstants.sectionSpacing
 
         let clickX = windowPoint.x - iconStripStartX
-        guard clickX >= 0 else { return }
+        guard clickX >= 0 else {
+            swLog("PANEL", "rightClick before icons: clickX=\(clickX)")
+            return
+        }
 
         let iconSlotWidth = SpaceBarConstants.iconSize + SpaceBarConstants.iconSpacing
         let slotIndex = Int(clickX / iconSlotWidth)
 
         // Check click is within the icon area (not in spacing after the last icon)
         let posInSlot = clickX - CGFloat(slotIndex) * iconSlotWidth
-        guard posInSlot <= SpaceBarConstants.iconSize else { return }
+        guard posInSlot <= SpaceBarConstants.iconSize else {
+            swLog("PANEL", "rightClick in spacing: posInSlot=\(posInSlot)")
+            return
+        }
 
         let iconsPerPage = configManager.iconsPerPage
-        guard slotIndex < iconsPerPage else { return }
+        guard slotIndex < iconsPerPage else {
+            swLog("PANEL", "rightClick slot overflow: slotIndex=\(slotIndex) iconsPerPage=\(iconsPerPage)")
+            return
+        }
 
-        guard let context = panelContexts[displayID] else { return }
+        guard let context = panelContexts[displayID] else {
+            swLog("PANEL", "rightClick no context for displayID=\(displayID)")
+            return
+        }
         let pageState = context.pageState
         let itemIndex = pageState.currentPage * iconsPerPage + slotIndex
         let snapshot = spaceEngine.snapshots[displayID] ?? spaceEngine.snapshot
-        guard itemIndex < snapshot.items.count else { return }
+        guard itemIndex < snapshot.items.count else {
+            swLog("PANEL", "rightClick item overflow: itemIndex=\(itemIndex) itemCount=\(snapshot.items.count) displayID=\(displayID)")
+            return
+        }
         let item = snapshot.items[itemIndex]
 
         // Calculate icon center screen position for balloon anchor
@@ -164,6 +185,7 @@ final class SpacePanelController {
         let iconTopY = barTop
         let screenPoint = context.panel.convertPoint(toScreen: NSPoint(x: iconCenterX, y: iconTopY))
 
+        swLog("PANEL", "rightClick HIT item=\(item.name) slotIndex=\(slotIndex) screenPoint=\(screenPoint) displayID=\(displayID)")
         showBalloonMenu(for: item, at: screenPoint)
     }
 
@@ -279,6 +301,8 @@ final class SpacePanelController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] snapshots in
                 guard let self = self else { return }
+                self.balloonPanel?.dismiss()
+                self.balloonPanel = nil
                 for (displayID, snapshot) in snapshots {
                     guard var context = self.panelContexts[displayID] else { continue }
                     if snapshot.spaceID != context.lastSpaceID {

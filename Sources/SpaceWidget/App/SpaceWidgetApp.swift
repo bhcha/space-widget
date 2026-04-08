@@ -1,6 +1,8 @@
 import AppKit
+import Combine
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var cancellables = Set<AnyCancellable>()
     private var configManager: ConfigManager?
     private var spaceEngine: SpaceEngine?
     private var stateWriter: StateWriter?
@@ -8,6 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController?
     private var autoHideManager: AutoHideManager?
     private var dockController: DockController?
+    private var windowShortcutController: WindowShortcutController?
+    private var preferencesController: PreferencesWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let configManager = ConfigManager()
@@ -24,11 +28,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.autoHideManager = autoHideManager
         self.dockController = dockController
         self.panelController = SpacePanelController(spaceEngine: spaceEngine, autoHideManager: autoHideManager)
+        let preferencesController = PreferencesWindowController(configManager: configManager)
+        self.preferencesController = preferencesController
+
         self.menuBarController = MenuBarController(
             autoHideManager: autoHideManager,
             configManager: configManager,
-            dockController: dockController
+            dockController: dockController,
+            preferencesController: preferencesController
         )
+
+        let windowShortcutController = WindowShortcutController(configManager: configManager)
+        windowShortcutController.registerShortcuts()
+        self.windowShortcutController = windowShortcutController
+
+        // Re-register shortcuts when settings change
+        configManager.$shortcuts
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak windowShortcutController] _ in
+                windowShortcutController?.registerShortcuts()
+            }
+            .store(in: &cancellables)
     }
 
     func applicationWillTerminate(_ notification: Notification) {

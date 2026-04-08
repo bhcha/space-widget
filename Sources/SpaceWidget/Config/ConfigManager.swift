@@ -12,6 +12,20 @@ final class ConfigManager: ObservableObject {
     static let iconsPerPageRange = 5...10
     static let defaultIconsPerPage = 5
     @Published private(set) var iconsPerPage: Int = defaultIconsPerPage
+    @Published private(set) var shortcuts: [String: ShortcutBinding] = defaultShortcuts
+
+    static let defaultShortcuts: [String: ShortcutBinding] = [
+        "leftHalf": ShortcutBinding(keyCode: 0x7B, modifiers: 0x1800, enabled: true),
+        "rightHalf": ShortcutBinding(keyCode: 0x7C, modifiers: 0x1800, enabled: true),
+        "maximize": ShortcutBinding(keyCode: 0x24, modifiers: 0x1800, enabled: true),
+        "firstThird": ShortcutBinding(keyCode: 0x02, modifiers: 0x1800, enabled: true),
+        "centerThird": ShortcutBinding(keyCode: 0x03, modifiers: 0x1800, enabled: true),
+        "lastThird": ShortcutBinding(keyCode: 0x05, modifiers: 0x1800, enabled: true),
+        "firstTwoThirds": ShortcutBinding(keyCode: 0x0E, modifiers: 0x1800, enabled: true),
+        "centerTwoThirds": ShortcutBinding(keyCode: 0x08, modifiers: 0x1800, enabled: true),
+        "lastTwoThirds": ShortcutBinding(keyCode: 0x11, modifiers: 0x1800, enabled: true),
+        "minimize": ShortcutBinding(keyCode: 0x35, modifiers: 0x1800, enabled: true),
+    ]
 
     // MARK: - Paths
 
@@ -38,6 +52,7 @@ final class ConfigManager: ObservableObject {
     private var spaceLabelsURL: URL { Self.configDir.appendingPathComponent("space_labels.json") }
     private var appActionsURL: URL { Self.configDir.appendingPathComponent("app_actions.json") }
     private var settingsURL: URL { Self.configDir.appendingPathComponent("settings.json") }
+    private var shortcutsURL: URL { Self.configDir.appendingPathComponent("shortcuts.json") }
 
     // MARK: - Defaults
 
@@ -92,6 +107,7 @@ final class ConfigManager: ObservableObject {
         appActions = loadAppActions()
         let rawIPP = loadSettings()["icons_per_page"] ?? Self.defaultIconsPerPage
         iconsPerPage = Swift.min(Swift.max(rawIPP, Self.iconsPerPageRange.lowerBound), Self.iconsPerPageRange.upperBound)
+        shortcuts = loadShortcuts()
     }
 
     func load() {
@@ -105,6 +121,7 @@ final class ConfigManager: ObservableObject {
             let actions = self.loadAppActions()
             let rawIPP = self.loadSettings()["icons_per_page"] ?? Self.defaultIconsPerPage
             let ipp = Swift.min(Swift.max(rawIPP, Self.iconsPerPageRange.lowerBound), Self.iconsPerPageRange.upperBound)
+            let loadedShortcuts = self.loadShortcuts()
 
             DispatchQueue.main.async {
                 if self.ignoredApps != ignored {
@@ -118,6 +135,9 @@ final class ConfigManager: ObservableObject {
                 }
                 if self.iconsPerPage != ipp {
                     self.iconsPerPage = ipp
+                }
+                if self.shortcuts != loadedShortcuts {
+                    self.shortcuts = loadedShortcuts
                 }
             }
         }
@@ -210,6 +230,21 @@ final class ConfigManager: ObservableObject {
         }
     }
 
+    // MARK: - Save: Shortcuts
+
+    func saveShortcuts(_ newShortcuts: [String: ShortcutBinding]) {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            guard let data = try? encoder.encode(newShortcuts) else { return }
+            self.atomicWrite(data: data, to: self.shortcutsURL)
+            DispatchQueue.main.async {
+                self.shortcuts = newShortcuts
+            }
+        }
+    }
+
     // MARK: - Private: File Loading
 
     private func loadIgnoredApps() -> Set<String> {
@@ -248,6 +283,15 @@ final class ConfigManager: ObservableObject {
             return [:]
         }
         return settings
+    }
+
+    private func loadShortcuts() -> [String: ShortcutBinding] {
+        guard let data = try? Data(contentsOf: shortcutsURL),
+              let loaded = try? JSONDecoder().decode([String: ShortcutBinding].self, from: data)
+        else { return Self.defaultShortcuts }
+        var merged = Self.defaultShortcuts
+        for (key, value) in loaded { merged[key] = value }
+        return merged
     }
 
     // MARK: - Private: Directory & Defaults
@@ -290,6 +334,14 @@ final class ConfigManager: ObservableObject {
             let defaults: [String: Int] = ["icons_per_page": Self.defaultIconsPerPage]
             if let data = try? JSONEncoder().encode(defaults) {
                 atomicWrite(data: data, to: settingsURL)
+            }
+        }
+
+        if !fm.fileExists(atPath: shortcutsURL.path) {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? encoder.encode(Self.defaultShortcuts) {
+                atomicWrite(data: data, to: shortcutsURL)
             }
         }
     }

@@ -5,14 +5,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let autoHideManager: AutoHideManager
     private let configManager: ConfigManager
     private let dockController: DockController
+    private let preferencesController: PreferencesWindowController
     private var autoHideItem: NSMenuItem?
     private var iconsPerPageItems: [NSMenuItem] = []
     private var dockModeItems: [NSMenuItem] = []
 
-    init(autoHideManager: AutoHideManager, configManager: ConfigManager, dockController: DockController) {
+    init(autoHideManager: AutoHideManager, configManager: ConfigManager, dockController: DockController, preferencesController: PreferencesWindowController) {
         self.autoHideManager = autoHideManager
         self.configManager = configManager
         self.dockController = dockController
+        self.preferencesController = preferencesController
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
         configureStatusItem()
@@ -84,6 +86,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        let prefsItem = NSMenuItem(
+            title: "Preferences...",
+            action: #selector(openPreferences),
+            keyEquivalent: ","
+        )
+        prefsItem.target = self
+        menu.addItem(prefsItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         let quitItem = NSMenuItem(
             title: "Quit SpaceWidget",
             action: #selector(NSApplication.terminate(_:)),
@@ -125,6 +137,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let modes: [DockMode] = [.autoHide, .alwaysHide, .alwaysShow]
         guard sender.tag >= 0, sender.tag < modes.count else { return }
         dockController.apply(mode: modes[sender.tag])
+    }
+
+    @objc private func openPreferences() {
+        preferencesController.showPreferences()
     }
 
     // MARK: - Icon

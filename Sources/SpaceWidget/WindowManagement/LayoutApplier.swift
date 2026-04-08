@@ -2,8 +2,11 @@ import AppKit
 import ApplicationServices
 
 final class LayoutApplier {
-    func apply(_ template: LayoutTemplate) {
+    func apply(_ template: LayoutTemplate, launchClosedApps: Bool = false) {
         guard let screenFrame = ScreenGeometry.mainScreenAXFrame() else { return }
+
+        // Track which apps we've already handled to avoid duplicates
+        var handledBundleIDs = Set<String>()
 
         for zone in template.zones {
             guard let bundleID = zone.assignedAppBundleID else { continue }
@@ -15,8 +18,17 @@ final class LayoutApplier {
             let targetRect = result.rect
 
             if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleID }) {
-                positionWindow(of: app, to: targetRect)
-            } else {
+                // App is running — check if it has a window on the current space
+                if let window = firstWindowOnCurrentSpace(of: app) {
+                    window.setFrame(targetRect)
+                } else if !handledBundleIDs.contains(bundleID) {
+                    // App running but no window on current space — open new window
+                    handledBundleIDs.insert(bundleID)
+                    openNewWindowAndPosition(app: app, targetRect: targetRect)
+                }
+            } else if launchClosedApps && !handledBundleIDs.contains(bundleID) {
+                // App not running — launch it
+                handledBundleIDs.insert(bundleID)
                 launchAndPosition(bundleID: bundleID, targetRect: targetRect)
             }
         }
@@ -24,9 +36,33 @@ final class LayoutApplier {
 
     // MARK: - Private
 
-    private func positionWindow(of app: NSRunningApplication, to rect: CGRect) {
-        guard let window = firstWindow(of: app) else { return }
-        window.setFrame(rect)
+    private func firstWindowOnCurrentSpace(of app: NSRunningApplication) -> WindowElement? {
+        var found: AXUIElement?
+        forEachWindowOnCurrentSpace(pid: app.processIdentifier) { _, axWindow, _ in
+            found = axWindow
+            return true // stop at first match
+        }
+        guard let axWindow = found else { return nil }
+        return WindowElement(axWindow)
+    }
+
+    private func openNewWindowAndPosition(app: NSRunningApplication, targetRect: CGRect) {
+        let pid = app.processIdentifier
+        AppActions.openNewWindow(pid: pid)
+
+        // Poll for the new window to appear on current space
+        pollForWindow(app: app, targetRect: targetRect, attempts: 0)
+    }
+
+    private func pollForWindow(app: NSRunningApplication, targetRect: CGRect, attempts: Int) {
+        if let window = firstWindowOnCurrentSpace(of: app) {
+            window.setFrame(targetRect)
+            return
+        }
+        guard attempts < 20 else { return } // give up after 2 seconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.pollForWindow(app: app, targetRect: targetRect, attempts: attempts + 1)
+        }
     }
 
     private func launchAndPosition(bundleID: String, targetRect: CGRect) {
@@ -37,29 +73,13 @@ final class LayoutApplier {
 
         NSWorkspace.shared.openApplication(at: appURL, configuration: config) { [weak self] app, error in
             guard let self = self, let app = app, error == nil else { return }
-            // Wait briefly for the app to create its window, then position
+            // Wait for the app to initialize, then check for window on current space
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                self.positionWindow(of: app, to: targetRect)
+                if self.firstWindowOnCurrentSpace(of: app) == nil {
+                    AppActions.openNewWindow(pid: app.processIdentifier)
+                }
+                self.pollForWindow(app: app, targetRect: targetRect, attempts: 0)
             }
         }
-    }
-
-    private func firstWindow(of app: NSRunningApplication) -> WindowElement? {
-        let appElement = AXUIElementCreateApplication(app.processIdentifier)
-
-        // Try focused window first
-        var windowRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &windowRef) == .success {
-            return WindowElement(windowRef as! AXUIElement)
-        }
-
-        // Fallback to first window in list
-        var windowsRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-              let windows = windowsRef as? [AXUIElement],
-              let first = windows.first
-        else { return nil }
-
-        return WindowElement(first)
     }
 }

@@ -199,7 +199,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
               let uuid = UUID(uuidString: idString),
               let template = templateStore?.templates.first(where: { $0.id == uuid })
         else { return }
-        applier?.apply(template)
+        applier?.apply(template, launchClosedApps: templateStore?.launchClosedApps ?? false)
     }
 
     @objc private func toggleAutoApply() {

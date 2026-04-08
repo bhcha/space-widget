@@ -13,6 +13,13 @@ final class PreferencesWindowController {
 
     func showPreferences() {
         if let window = window {
+            // Always move to main screen center when reopening
+            if let screen = NSScreen.main {
+                let screenFrame = screen.visibleFrame
+                let x = screenFrame.midX - window.frame.width / 2
+                let y = screenFrame.midY - window.frame.height / 2
+                window.setFrameOrigin(NSPoint(x: x, y: y))
+            }
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return

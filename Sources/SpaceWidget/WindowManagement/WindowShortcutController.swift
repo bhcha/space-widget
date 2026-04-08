@@ -32,8 +32,8 @@ final class WindowShortcutController {
         for template in store.templates {
             guard let binding = template.shortcut, binding.enabled else { continue }
             let templateCopy = template
-            hotKeyManager.register(keyCode: binding.keyCode, modifiers: binding.modifiers) {
-                applier.apply(templateCopy)
+            hotKeyManager.register(keyCode: binding.keyCode, modifiers: binding.modifiers) { [weak store] in
+                applier.apply(templateCopy, launchClosedApps: store?.launchClosedApps ?? false)
             }
         }
     }

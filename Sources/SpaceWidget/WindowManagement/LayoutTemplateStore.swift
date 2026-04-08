@@ -5,6 +5,7 @@ final class LayoutTemplateStore: ObservableObject {
     @Published private(set) var templates: [LayoutTemplate] = []
     @Published private(set) var spaceAssignments: [Int: UUID] = [:]  // ordinal → template ID
     @Published var autoApplyEnabled: Bool = false
+    @Published var launchClosedApps: Bool = false
 
     private var templatesURL: URL { ConfigManager.configDir.appendingPathComponent("templates.json") }
     private var spaceAssignmentsURL: URL { ConfigManager.configDir.appendingPathComponent("space_assignments.json") }
@@ -27,6 +28,7 @@ final class LayoutTemplateStore: ObservableObject {
         let assignments = loadSpaceAssignments()
         spaceAssignments = assignments.assignments
         autoApplyEnabled = assignments.autoApplyEnabled
+        launchClosedApps = assignments.launchClosedApps
     }
 
     private func loadTemplates() -> [LayoutTemplate] {
@@ -46,7 +48,7 @@ final class LayoutTemplateStore: ObservableObject {
         guard let data = try? Data(contentsOf: spaceAssignmentsURL),
               let loaded = try? JSONDecoder().decode(SpaceAssignmentsFile.self, from: data)
         else {
-            return SpaceAssignmentsFile(assignments: [:], autoApplyEnabled: false)
+            return SpaceAssignmentsFile(assignments: [:], autoApplyEnabled: false, launchClosedApps: false)
         }
         return loaded
     }
@@ -61,7 +63,7 @@ final class LayoutTemplateStore: ObservableObject {
     }
 
     private func saveSpaceAssignments() {
-        let file = SpaceAssignmentsFile(assignments: spaceAssignments, autoApplyEnabled: autoApplyEnabled)
+        let file = SpaceAssignmentsFile(assignments: spaceAssignments, autoApplyEnabled: autoApplyEnabled, launchClosedApps: launchClosedApps)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(file) else { return }
@@ -118,6 +120,11 @@ final class LayoutTemplateStore: ObservableObject {
         autoApplyEnabled = enabled
         saveSpaceAssignments()
     }
+
+    func setLaunchClosedApps(_ enabled: Bool) {
+        launchClosedApps = enabled
+        saveSpaceAssignments()
+    }
 }
 
 // MARK: - Persistence Model
@@ -125,20 +132,24 @@ final class LayoutTemplateStore: ObservableObject {
 private struct SpaceAssignmentsFile: Codable {
     var assignments: [Int: UUID]
     var autoApplyEnabled: Bool
+    var launchClosedApps: Bool
 
     enum CodingKeys: String, CodingKey {
         case assignments
         case autoApplyEnabled
+        case launchClosedApps
     }
 
-    init(assignments: [Int: UUID], autoApplyEnabled: Bool) {
+    init(assignments: [Int: UUID], autoApplyEnabled: Bool, launchClosedApps: Bool) {
         self.assignments = assignments
         self.autoApplyEnabled = autoApplyEnabled
+        self.launchClosedApps = launchClosedApps
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         autoApplyEnabled = try container.decode(Bool.self, forKey: .autoApplyEnabled)
+        launchClosedApps = (try? container.decode(Bool.self, forKey: .launchClosedApps)) ?? false
         // JSON keys are strings, decode and convert to Int
         let stringKeyed = try container.decode([String: UUID].self, forKey: .assignments)
         assignments = Dictionary(uniqueKeysWithValues: stringKeyed.compactMap { k, v in
@@ -150,6 +161,7 @@ private struct SpaceAssignmentsFile: Codable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(autoApplyEnabled, forKey: .autoApplyEnabled)
+        try container.encode(launchClosedApps, forKey: .launchClosedApps)
         let stringKeyed = Dictionary(uniqueKeysWithValues: assignments.map { ("\($0.key)", $0.value) })
         try container.encode(stringKeyed, forKey: .assignments)
     }

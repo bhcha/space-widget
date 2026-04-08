@@ -264,6 +264,11 @@ struct LayoutTemplatesView: View {
                 set: { store.setAutoApplyEnabled($0) }
             ))
             .padding(.top, 4)
+
+            Toggle("Launch closed apps", isOn: Binding(
+                get: { store.launchClosedApps },
+                set: { store.setLaunchClosedApps($0) }
+            ))
         }
     }
 

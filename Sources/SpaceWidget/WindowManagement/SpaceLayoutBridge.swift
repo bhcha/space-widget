@@ -34,12 +34,11 @@ final class SpaceLayoutBridge {
                 let targetOrdinal = space.ordinal
                 let work = DispatchWorkItem { [weak self] in
                     guard let self = self else { return }
-                    // Re-read current space to ensure we haven't switched again
                     let currentSpace = self.spaceMonitor.currentSpace
                     guard currentSpace.ordinal == targetOrdinal,
                           let template = self.store.templateForSpace(targetOrdinal)
                     else { return }
-                    self.applier.apply(template)
+                    self.applier.apply(template, launchClosedApps: self.store.launchClosedApps)
                 }
                 self.pendingApply = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)

@@ -23,7 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let spaceMonitor = SpaceMonitor()
         let spaceEngine = SpaceEngine(configManager: configManager, spaceMonitor: spaceMonitor)
         let stateWriter = StateWriter()
-        stateWriter.subscribe(to: spaceEngine.$snapshot)
+        stateWriter.subscribe(to: spaceEngine.$snapshots, mainDisplayID: { spaceEngine.spaceMonitor.mainDisplayIdentifier })
 
         let autoHideManager = AutoHideManager()
         let dockController = DockController()

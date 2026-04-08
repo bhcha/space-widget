@@ -7,7 +7,7 @@ final class ConfigManager: ObservableObject {
     // MARK: - Published Properties
 
     @Published private(set) var ignoredApps: Set<String> = []
-    @Published private(set) var spaceLabels: [Int: String] = [:]
+    @Published private(set) var spaceLabels: [String: String] = [:]
     @Published private(set) var appActions: [String: [String: String]] = [:]
     static let iconsPerPageRange = 5...10
     static let defaultIconsPerPage = 5
@@ -171,12 +171,12 @@ final class ConfigManager: ObservableObject {
 
     // MARK: - Save: Space Labels
 
-    func saveSpaceLabels(_ labels: [Int: String]) {
+    func saveSpaceLabels(_ labels: [String: String]) {
         queue.async { [weak self] in
             guard let self = self else { return }
-            // JSON keys must be strings
-            let stringKeyed = Dictionary(uniqueKeysWithValues: labels.map { ("\($0.key)", $0.value) })
-            guard let data = try? JSONEncoder().encode(stringKeyed) else { return }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            guard let data = try? encoder.encode(labels) else { return }
             self.atomicWrite(data: data, to: self.spaceLabelsURL)
             DispatchQueue.main.async {
                 self.spaceLabels = labels
@@ -184,17 +184,26 @@ final class ConfigManager: ObservableObject {
         }
     }
 
-    func updateSpaceLabel(ordinal: Int, label: String) {
+    /// Label key for a given display and ordinal.
+    /// Main display uses plain ordinal ("1"), extended displays use "displayID:ordinal".
+    static func labelKey(displayID: String, ordinal: Int, mainDisplayID: String) -> String {
+        if displayID == mainDisplayID {
+            return "\(ordinal)"
+        }
+        return "\(displayID):\(ordinal)"
+    }
+
+    func updateSpaceLabel(key: String, label: String) {
         guard Thread.isMainThread else {
-            DispatchQueue.main.async { [weak self] in self?.updateSpaceLabel(ordinal: ordinal, label: label) }
+            DispatchQueue.main.async { [weak self] in self?.updateSpaceLabel(key: key, label: label) }
             return
         }
         var updated = spaceLabels
         let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            updated.removeValue(forKey: ordinal)
+            updated.removeValue(forKey: key)
         } else {
-            updated[ordinal] = trimmed
+            updated[key] = trimmed
         }
         saveSpaceLabels(updated)
     }
@@ -255,18 +264,12 @@ final class ConfigManager: ObservableObject {
         return Set(array)
     }
 
-    private func loadSpaceLabels() -> [Int: String] {
+    private func loadSpaceLabels() -> [String: String] {
         guard let data = try? Data(contentsOf: spaceLabelsURL),
-              let stringKeyed = try? JSONDecoder().decode([String: String].self, from: data) else {
-            return Dictionary(uniqueKeysWithValues: Self.defaultSpaceLabels.compactMap { k, v in
-                guard let i = Int(k) else { return nil }
-                return (i, v)
-            })
+              let labels = try? JSONDecoder().decode([String: String].self, from: data) else {
+            return Self.defaultSpaceLabels
         }
-        return Dictionary(uniqueKeysWithValues: stringKeyed.compactMap { k, v in
-            guard let i = Int(k) else { return nil }
-            return (i, v)
-        })
+        return labels
     }
 
     private func loadAppActions() -> [String: [String: String]] {

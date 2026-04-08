@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import CoreGraphics
 import ApplicationServices
 
@@ -60,6 +60,46 @@ func forEachWindowOnCurrentSpace(
 
         guard let spaces = CGSCopySpacesForWindows(cid, 0x7, [wid] as CFArray) as? [UInt64],
               spaces.contains(currentSpaceID),
+              !singleSpaceOnly || spaces.count == 1
+        else { continue }
+
+        if body(appElement, axWindow, wid) { return }
+    }
+}
+
+/// Returns the CGS display identifier string for a given NSScreen.
+func displayIdentifier(for screen: NSScreen) -> String? {
+    guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
+          let uuid = CGDisplayCreateUUIDFromDisplayID(screenNumber) else { return nil }
+    let cfString = CFUUIDCreateString(nil, uuid.takeRetainedValue())
+    return cfString as String?
+}
+
+/// Enumerate AX windows of an app that exist on a specific space.
+/// - Parameters:
+///   - pid: The process ID
+///   - spaceID: The space to filter windows by
+///   - singleSpaceOnly: If true, skips windows assigned to multiple spaces (sticky windows)
+///   - body: Called for each matching window. Return `true` to stop early.
+func forEachWindowOnSpace(
+    pid: pid_t,
+    spaceID: UInt64,
+    singleSpaceOnly: Bool = false,
+    body: (_ appElement: AXUIElement, _ axWindow: AXUIElement, _ wid: CGWindowID) -> Bool
+) {
+    let appElement = AXUIElementCreateApplication(pid)
+    var windowsRef: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+          let axWindows = windowsRef as? [AXUIElement] else { return }
+
+    let cid = CGSMainConnectionID()
+
+    for axWindow in axWindows {
+        var wid: CGWindowID = 0
+        guard _AXUIElementGetWindow(axWindow, &wid) == .success else { continue }
+
+        guard let spaces = CGSCopySpacesForWindows(cid, 0x7, [wid] as CFArray) as? [UInt64],
+              spaces.contains(spaceID),
               !singleSpaceOnly || spaces.count == 1
         else { continue }
 

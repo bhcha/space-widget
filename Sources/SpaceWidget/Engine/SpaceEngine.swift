@@ -2,17 +2,27 @@ import AppKit
 import Combine
 
 final class SpaceEngine: ObservableObject {
-    @Published private(set) var snapshot: DockSnapshot
+    @Published private(set) var snapshots: [String: DockSnapshot] = [:]
+
+    var snapshot: DockSnapshot {
+        snapshots[spaceMonitor.mainDisplayIdentifier] ?? DockSnapshot(
+            space: ActiveSpace(id: 0, ordinal: 1),
+            spaceLabel: "Untitled",
+            items: [],
+            focusedBundleID: nil,
+            capturedAt: Date()
+        )
+    }
 
     let configManager: ConfigManager
-    private let spaceMonitor: SpaceMonitor
+    let spaceMonitor: SpaceMonitor
     private let windowListProvider: WindowListProvider
     private var cancellables = Set<AnyCancellable>()
     private var refreshWorkItem: DispatchWorkItem?
     private var followUpWorkItem: DispatchWorkItem?
     private var pendingSpaceCommitWorkItem: DispatchWorkItem?
-    private var confirmedSpace: ActiveSpace?
-    private var previousConfirmedSpace: ActiveSpace?
+    private var confirmedSpaces: [String: ActiveSpace] = [:]
+    private var previousConfirmedSpaces: [String: ActiveSpace] = [:]
     private var hasInitialSnapshot = false
     private var configEventsEnabled = false
     private let bootstrapConfigDelay: TimeInterval = 0.2
@@ -25,15 +35,6 @@ final class SpaceEngine: ObservableObject {
         self.configManager = configManager
         self.spaceMonitor = spaceMonitor
         self.windowListProvider = windowListProvider
-
-        // Bootstrap empty snapshot
-        self.snapshot = DockSnapshot(
-            space: ActiveSpace(id: 0, ordinal: 1),
-            spaceLabel: "Untitled",
-            items: [],
-            focusedBundleID: nil,
-            capturedAt: Date()
-        )
 
         observeSpaceChanges()
         observeConfigChanges()
@@ -51,26 +52,27 @@ final class SpaceEngine: ObservableObject {
 
     /// Force an immediate refresh (e.g. called externally after config reload).
     func refresh() {
-        let activeSpace = confirmedSpace ?? spaceMonitor.currentSpace
-        guard activeSpace.id != 0 else { return }
-        captureSnapshot(reason: "manual_refresh", activeSpace: activeSpace)
+        guard !confirmedSpaces.isEmpty else { return }
+        captureSnapshots(reason: "manual_refresh")
     }
 
     // MARK: - Observations
 
     private func observeSpaceChanges() {
-        spaceMonitor.$currentSpace
-            .removeDuplicates()
+        spaceMonitor.$displaySpaces
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] activeSpace in
+            .sink { [weak self] displaySpaces in
                 guard let self = self else { return }
-                guard activeSpace.id != 0 else {
-                    swLog("SPACE", "ignoring bootstrap zero-id event for ordinal=\(activeSpace.ordinal)")
-                    return
+                for (displayID, activeSpace) in displaySpaces {
+                    guard activeSpace.id != 0 else {
+                        swLog("SPACE", "ignoring bootstrap zero-id event for display=\(displayID) ordinal=\(activeSpace.ordinal)")
+                        continue
+                    }
+                    let labelKey = ConfigManager.labelKey(displayID: displayID, ordinal: activeSpace.ordinal, mainDisplayID: self.spaceMonitor.mainDisplayIdentifier)
+                    let label = self.configManager.spaceLabels[labelKey] ?? "Untitled"
+                    swLog("SPACE", "detected display=\(displayID) ordinal=\(activeSpace.ordinal) id=\(activeSpace.id) label=\(label)")
+                    self.scheduleSpaceCommit(displayID: displayID, activeSpace)
                 }
-                let label = self.configManager.spaceLabels[activeSpace.ordinal] ?? "Untitled"
-                swLog("SPACE", "detected ordinal=\(activeSpace.ordinal) id=\(activeSpace.id) label=\(label)")
-                self.scheduleSpaceCommit(activeSpace)
             }
             .store(in: &cancellables)
     }
@@ -83,9 +85,8 @@ final class SpaceEngine: ObservableObject {
             .sink { [weak self] _ in
                 guard let self = self else { return }
                 guard self.configEventsEnabled else { return }
-                let activeSpace = self.confirmedSpace ?? self.spaceMonitor.currentSpace
-                guard activeSpace.id != 0 else { return }
-                self.captureSnapshot(reason: "labels_changed", activeSpace: activeSpace)
+                guard !self.confirmedSpaces.isEmpty else { return }
+                self.captureSnapshots(reason: "labels_changed")
             }
             .store(in: &cancellables)
 
@@ -183,108 +184,122 @@ final class SpaceEngine: ObservableObject {
         refreshWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
-            let activeSpace = self.confirmedSpace ?? self.spaceMonitor.currentSpace
-            guard activeSpace.id != 0 else { return }
-            self.captureSnapshot(
-                reason: reason,
-                activeSpace: activeSpace,
-                preferredFocusedBundleID: preferredFocusedBundleID
-            )
+            guard !self.confirmedSpaces.isEmpty else { return }
+            self.captureSnapshots(reason: reason, preferredFocusedBundleID: preferredFocusedBundleID)
         }
         refreshWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    private func scheduleSpaceCommit(_ candidate: ActiveSpace) {
-        pendingSpaceCommitWorkItem?.cancel()
-
-        // First ever space — commit immediately
-        guard let confirmed = confirmedSpace else {
-            confirmedSpace = candidate
-            captureSnapshot(reason: "space_changed", activeSpace: candidate)
+    private func scheduleSpaceCommit(displayID: String, _ candidate: ActiveSpace) {
+        // First ever space for this display — commit immediately
+        guard let confirmed = confirmedSpaces[displayID] else {
+            confirmedSpaces[displayID] = candidate
+            captureSnapshots(reason: "space_changed")
             return
         }
 
-        // Same as current confirmed — no-op (suppresses return during pending)
+        // Same as current confirmed — no-op
         if candidate == confirmed {
-            swLog("SPACE", "suppressed transient change; staying on ordinal=\(candidate.ordinal) id=\(candidate.id)")
+            swLog("SPACE", "suppressed transient change; staying on display=\(displayID) ordinal=\(candidate.ordinal) id=\(candidate.id)")
             return
         }
 
         // Returning to previous confirmed space — instant commit (round-trip recovery)
-        if let prev = previousConfirmedSpace, candidate == prev {
-            swLog("SPACE", "round-trip return to ordinal=\(candidate.ordinal) id=\(candidate.id) — instant commit")
-            previousConfirmedSpace = confirmed
-            confirmedSpace = candidate
-            captureSnapshot(reason: "space_changed", activeSpace: candidate)
+        if let prev = previousConfirmedSpaces[displayID], candidate == prev {
+            swLog("SPACE", "round-trip return to display=\(displayID) ordinal=\(candidate.ordinal) id=\(candidate.id) — instant commit")
+            previousConfirmedSpaces[displayID] = confirmed
+            confirmedSpaces[displayID] = candidate
+            captureSnapshots(reason: "space_changed")
             return
         }
 
-        self.previousConfirmedSpace = self.confirmedSpace
-        self.confirmedSpace = candidate
-        self.captureSnapshot(reason: "space_changed", activeSpace: candidate)
+        previousConfirmedSpaces[displayID] = confirmedSpaces[displayID]
+        confirmedSpaces[displayID] = candidate
+        captureSnapshots(reason: "space_changed")
     }
 
     // MARK: - Snapshot Capture
 
-    /// Captures a snapshot. Must be called on the main thread so ignoredApps is read safely.
-    private func captureSnapshot(
+    /// Captures snapshots for all known displays. Must be called on the main thread.
+    private func captureSnapshots(
         reason: String,
-        activeSpace: ActiveSpace,
         preferredFocusedBundleID: String? = nil
     ) {
-        assert(Thread.isMainThread, "captureSnapshot must be called on main thread")
+        assert(Thread.isMainThread, "captureSnapshots must be called on main thread")
 
-        let label = configManager.spaceLabels[activeSpace.ordinal] ?? "Untitled"
         let focusedBundleID = preferredFocusedBundleID ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        // Capture ignoredApps on main thread to avoid data race
         let ignoredApps = configManager.ignoredApps
+        let spaceLabels = configManager.spaceLabels
+        let confirmedSpacesCopy = confirmedSpaces
 
-        swLog(
-            "FETCH",
-            "started reason=\(reason) ordinal=\(activeSpace.ordinal) id=\(activeSpace.id) label=\(label) focusedBundleID=\(focusedBundleID ?? "nil")"
-        )
+        swLog("FETCH", "started reason=\(reason) displays=\(confirmedSpacesCopy.count) focusedBundleID=\(focusedBundleID ?? "nil")")
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            let items = self.windowListProvider.fetchItems(
-                focusedBundleID: focusedBundleID,
-                ignoredApps: ignoredApps
-            )
-            let names = items.map(\.name)
-            swLog("FETCH", "result reason=\(reason) count=\(names.count) apps=[\(names.joined(separator: ", "))]")
 
-            let newSnapshot = DockSnapshot(
-                space: activeSpace,
-                spaceLabel: label,
-                items: items,
-                focusedBundleID: focusedBundleID,
-                capturedAt: Date()
-            )
+            var newSnapshots: [String: DockSnapshot] = [:]
+
+            for (displayID, activeSpace) in confirmedSpacesCopy {
+                let labelKey = ConfigManager.labelKey(displayID: displayID, ordinal: activeSpace.ordinal, mainDisplayID: self.spaceMonitor.mainDisplayIdentifier)
+                let label = spaceLabels[labelKey] ?? "Untitled"
+
+                // Find matching NSScreen for this display
+                let matchingScreen = NSScreen.screens.first { screen in
+                    displayIdentifier(for: screen) == displayID
+                }
+
+                let items: [DockItem]
+                if let screen = matchingScreen {
+                    items = self.windowListProvider.fetchItems(
+                        screenFrame: screen.frame,
+                        focusedBundleID: focusedBundleID,
+                        ignoredApps: ignoredApps,
+                        spaceID: activeSpace.id
+                    )
+                } else {
+                    items = self.windowListProvider.fetchItems(
+                        focusedBundleID: focusedBundleID,
+                        ignoredApps: ignoredApps
+                    )
+                }
+
+                let names = items.map(\.name)
+                swLog("FETCH", "result reason=\(reason) display=\(displayID) ordinal=\(activeSpace.ordinal) count=\(names.count) apps=[\(names.joined(separator: ", "))]")
+
+                newSnapshots[displayID] = DockSnapshot(
+                    space: activeSpace,
+                    spaceLabel: label,
+                    items: items,
+                    focusedBundleID: focusedBundleID,
+                    capturedAt: Date()
+                )
+            }
 
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
-                let expectedSpace = self.confirmedSpace ?? self.spaceMonitor.currentSpace
-                guard activeSpace == expectedSpace else {
-                    swLog(
-                        "SNAPSHOT",
-                        "dropped stale reason=\(reason) ordinal=\(activeSpace.ordinal) id=\(activeSpace.id); current ordinal=\(expectedSpace.ordinal) id=\(expectedSpace.id)"
-                    )
-                    return
-                }
-                self.applySnapshot(newSnapshot, reason: reason)
-            }
-        }
-    }
 
-    private func applySnapshot(_ newSnapshot: DockSnapshot, reason: String) {
-        snapshot = newSnapshot
-        if !hasInitialSnapshot {
-            hasInitialSnapshot = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + bootstrapConfigDelay) { [weak self] in
-                self?.configEventsEnabled = true
+                // Validate that confirmed spaces still match what we captured
+                var valid = true
+                for (displayID, activeSpace) in confirmedSpacesCopy {
+                    let current = self.confirmedSpaces[displayID] ?? self.spaceMonitor.displaySpaces[displayID]
+                    if let current = current, activeSpace != current {
+                        swLog("SNAPSHOT", "dropped stale reason=\(reason) display=\(displayID) ordinal=\(activeSpace.ordinal) id=\(activeSpace.id); current ordinal=\(current.ordinal) id=\(current.id)")
+                        valid = false
+                        break
+                    }
+                }
+                guard valid else { return }
+
+                self.snapshots = newSnapshots
+                if !self.hasInitialSnapshot {
+                    self.hasInitialSnapshot = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + self.bootstrapConfigDelay) { [weak self] in
+                        self?.configEventsEnabled = true
+                    }
+                }
+                swLog("SNAPSHOT", "applied reason=\(reason) displays=\(newSnapshots.count)")
             }
         }
-        swLog("SNAPSHOT", "applied reason=\(reason) ordinal=\(newSnapshot.spaceNumber) id=\(newSnapshot.spaceID) label=\(newSnapshot.spaceLabel) apps=\(newSnapshot.items.count)")
     }
 }

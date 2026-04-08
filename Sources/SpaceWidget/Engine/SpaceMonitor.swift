@@ -2,7 +2,20 @@ import AppKit
 import Combine
 
 final class SpaceMonitor: ObservableObject {
-    @Published private(set) var currentSpace: ActiveSpace = ActiveSpace(id: 0, ordinal: 1)
+    @Published private(set) var displaySpaces: [String: ActiveSpace] = [:]
+
+    var currentSpace: ActiveSpace {
+        displaySpaces[mainDisplayIdentifier] ?? ActiveSpace(id: 0, ordinal: 1)
+    }
+
+    var mainDisplayIdentifier: String {
+        let mainDisplayID = CGMainDisplayID()
+        if let uuid = CGDisplayCreateUUIDFromDisplayID(mainDisplayID),
+           let uuidString = CFUUIDCreateString(nil, uuid.takeRetainedValue()) {
+            return uuidString as String
+        }
+        return "Main"
+    }
 
     private var debounceTask: DispatchWorkItem?
 
@@ -40,102 +53,64 @@ final class SpaceMonitor: ObservableObject {
         }
 
         swLog("EVENT", "space refresh begin immediate=\(immediate)")
-        guard let resolved = resolveCurrentSpace() else { return }
-        commitSpace(resolved)
+        let resolved = resolveAllSpaces()
+        commitSpaces(resolved)
     }
 
-    /// Resolve the current space ID and ordinal from CGS APIs.
-    private func resolveCurrentSpace() -> ActiveSpace? {
+    private func resolveAllSpaces() -> [String: ActiveSpace] {
         let cid = CGSMainConnectionID()
         let displays = CGSCopyManagedDisplaySpaces(cid) as [AnyObject]
 
-        let mainDisplayID = CGMainDisplayID()
-        let mainDisplayIdentifier: String?
-        let spaceID: UInt64
-
-        if let displayUUIDUnmanaged = CGDisplayCreateUUIDFromDisplayID(mainDisplayID),
-           let uuidCFString = CFUUIDCreateString(nil, displayUUIDUnmanaged.takeRetainedValue()) {
-            let displayIdentifier = uuidCFString as String
-            mainDisplayIdentifier = displayIdentifier
-            spaceID = CGSManagedDisplayGetCurrentSpace(cid, uuidCFString as CFString)
-        } else {
-            mainDisplayIdentifier = nil
-            spaceID = CGSManagedDisplayGetCurrentSpace(cid, "Main" as CFString)
-        }
-
-        let spaceType = CGSSpaceGetType(cid, spaceID)
-        let resolution = resolveManagedSpaceInfo(
-            displays: displays,
-            currentSpaceID: spaceID,
-            mainDisplayIdentifier: mainDisplayIdentifier
-        )
-
-        swLog(
-            "SPACE",
-            "metadata id=\(spaceID) type=\(spaceType) listed=\(resolution.isListed) ordinal=\(resolution.ordinal) userSpaces=\(resolution.userSpaceCount) display=\(resolution.displayIdentifier)"
-        )
-
-        if spaceType != 0 {
-            swLog("SPACE", "skipping non-desktop current space id=\(spaceID) type=\(spaceType)")
-            return nil
-        }
-
-        if !resolution.isListed {
-            swLog("SPACE", "skipping unmanaged current space id=\(spaceID) type=\(spaceType) display=\(resolution.displayIdentifier)")
-            return nil
-        }
-
-        return ActiveSpace(id: spaceID, ordinal: resolution.ordinal)
-    }
-
-    private func commitSpace(_ space: ActiveSpace) {
-        swLog("EVENT", "space commit ordinal=\(space.ordinal) id=\(space.id)")
-        currentSpace = space
-    }
-
-    private func resolveManagedSpaceInfo(
-        displays: [AnyObject],
-        currentSpaceID: UInt64,
-        mainDisplayIdentifier: String?
-    ) -> (ordinal: Int, isListed: Bool, userSpaceCount: Int, displayIdentifier: String) {
-        var ordinal = 1
-        var counter = 1
-        var isListed = false
-        var userSpaceCount = 0
-        var matchedDisplayIdentifier = mainDisplayIdentifier ?? "unknown"
+        var result: [String: ActiveSpace] = [:]
 
         for display in displays {
             guard let displayDict = display as? [String: AnyObject],
-                  let spaces = displayDict["Spaces"] as? [[String: AnyObject]]
+                  let spaces = displayDict["Spaces"] as? [[String: AnyObject]],
+                  let displayIdentifier = displayDict["Display Identifier"] as? String
             else { continue }
 
-            let displayIdentifier = displayDict["Display Identifier"] as? String ?? "unknown"
-            let isTargetDisplay: Bool
-            if let mainDisplayIdentifier {
-                isTargetDisplay = displayIdentifier == mainDisplayIdentifier
-            } else {
-                isTargetDisplay = true
+            let displayIDCF = displayIdentifier as CFString
+            let spaceID = CGSManagedDisplayGetCurrentSpace(cid, displayIDCF)
+            let spaceType = CGSSpaceGetType(cid, spaceID)
+
+            if spaceType != 0 {
+                swLog("SPACE", "skipping non-desktop current space id=\(spaceID) type=\(spaceType) display=\(displayIdentifier)")
+                continue
             }
+
+            // Compute ordinal per-display (only type-0 spaces in this display)
+            var ordinal = 1
+            var counter = 1
+            var isListed = false
 
             for space in spaces {
                 guard let sid = space["id64"] as? UInt64 else { continue }
                 let listedType = (space["type"] as? NSNumber)?.intValue ?? 0
                 if listedType == 0 {
-                    if isTargetDisplay {
-                        userSpaceCount += 1
-                    }
-                    if sid == currentSpaceID {
-                        isListed = true
-                        matchedDisplayIdentifier = displayIdentifier
-                    }
-                    if sid == currentSpaceID {
+                    if sid == spaceID {
                         ordinal = counter
+                        isListed = true
                     }
                     counter += 1
                 }
             }
+
+            if !isListed {
+                swLog("SPACE", "skipping unmanaged current space id=\(spaceID) display=\(displayIdentifier)")
+                continue
+            }
+
+            swLog("SPACE", "metadata id=\(spaceID) ordinal=\(ordinal) display=\(displayIdentifier)")
+            result[displayIdentifier] = ActiveSpace(id: spaceID, ordinal: ordinal)
         }
 
-        return (ordinal, isListed, userSpaceCount, matchedDisplayIdentifier)
+        return result
+    }
+
+    private func commitSpaces(_ resolvedSpaces: [String: ActiveSpace]) {
+        for (displayID, space) in resolvedSpaces {
+            swLog("EVENT", "space commit display=\(displayID) ordinal=\(space.ordinal) id=\(space.id)")
+        }
+        displaySpaces = resolvedSpaces
     }
 }

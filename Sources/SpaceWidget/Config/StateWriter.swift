@@ -18,10 +18,13 @@ final class StateWriter {
 
     // MARK: - Combine Subscription
 
-    /// Subscribe to a SpaceEngine snapshot publisher and write state on each change.
-    func subscribe(to publisher: Published<DockSnapshot>.Publisher) {
+    /// Subscribe to a SpaceEngine snapshots publisher and write state for the main display on each change.
+    func subscribe(to publisher: Published<[String: DockSnapshot]>.Publisher, mainDisplayID: @escaping () -> String) {
         publisher
             .receive(on: DispatchQueue.main)
+            .compactMap { snapshots -> DockSnapshot? in
+                snapshots[mainDisplayID()]
+            }
             .sink { [weak self] snapshot in
                 guard snapshot.space.id != 0 else { return }
                 self?.write(

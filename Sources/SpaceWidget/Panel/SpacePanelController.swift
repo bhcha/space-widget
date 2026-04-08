@@ -3,18 +3,23 @@ import SwiftUI
 import Combine
 
 final class SpacePanelController {
-    private var panel: SpacePanel?
-    private var hostingView: NSHostingView<SpaceBarView>?
+    private struct PanelContext {
+        let displayIdentifier: String
+        let panel: SpacePanel
+        let hostingView: NSHostingView<SpaceBarView>
+        let hotZoneView: HotZoneView
+        let pageState: SpaceBarPageState
+        var lastSpaceID: UInt64? = nil
+    }
+
+    private var panelContexts: [String: PanelContext] = [:]
     private var balloonPanel: BalloonMenuPanel?
     private let spaceEngine: SpaceEngine
     private let autoHideManager: AutoHideManager
     private let configManager: ConfigManager
-    private let pageState = SpaceBarPageState()
     private var cancellables = Set<AnyCancellable>()
     private var screenObserver: NSObjectProtocol?
-    private var lastSpaceID: UInt64? = nil
     private var hideWorkItem: DispatchWorkItem?
-    private var hotZoneView: HotZoneView?
 
     deinit {
         if let screenObserver = screenObserver {
@@ -27,7 +32,7 @@ final class SpacePanelController {
         self.autoHideManager = autoHideManager
         self.configManager = spaceEngine.configManager
         DispatchQueue.main.async { [weak self] in
-            self?.setupPanel()
+            self?.setupPanels()
             self?.observeScreenChanges()
             self?.observeEngine()
             self?.observeAutoHide()
@@ -35,22 +40,36 @@ final class SpacePanelController {
         }
     }
 
-    private func setupPanel(retryCount: Int = 0) {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else {
+    private func setupPanels(retryCount: Int = 0) {
+        guard !NSScreen.screens.isEmpty else {
             guard retryCount < 10 else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                self?.setupPanel(retryCount: retryCount + 1)
+                self?.setupPanels(retryCount: retryCount + 1)
             }
             return
         }
-        let screenFrame = screen.frame
 
-        let snapshot = spaceEngine.snapshot
-        let initialView = makeSpaceBarView(from: snapshot)
+        swLog("PANEL", "setupPanels screens=\(NSScreen.screens.count)")
+        for screen in NSScreen.screens {
+            let displayID = displayIdentifier(for: screen)
+            swLog("PANEL", "screen frame=\(screen.frame) displayID=\(displayID ?? "nil")")
+            guard let displayID else { continue }
+            guard panelContexts[displayID] == nil else { continue }
+            addPanelContext(for: screen, displayID: displayID)
+        }
+    }
+
+    private func addPanelContext(for screen: NSScreen, displayID: String) {
+        swLog("PANEL", "addPanelContext displayID=\(displayID) frame=\(screen.frame)")
+        let screenFrame = screen.frame
+        let localBounds = CGRect(origin: .zero, size: screenFrame.size)
+        let pageState = SpaceBarPageState()
+
+        let snapshot = spaceEngine.snapshots[displayID] ?? spaceEngine.snapshot
+        let initialView = makeSpaceBarView(from: snapshot, displayID: displayID, pageState: pageState)
         let hostingView = NSHostingView(rootView: initialView)
-        hostingView.frame = screenFrame
+        hostingView.frame = localBounds
         hostingView.autoresizingMask = [.width, .height]
-        self.hostingView = hostingView
 
         let panel = SpacePanel(
             contentRect: screenFrame,
@@ -59,10 +78,10 @@ final class SpacePanelController {
             defer: false
         )
 
-        let container = NSView(frame: screenFrame)
+        let container = NSView(frame: localBounds)
         container.autoresizingMask = [.width, .height]
 
-        hostingView.frame = screenFrame
+        hostingView.frame = localBounds
         container.addSubview(hostingView)
 
         let hotZoneView = HotZoneView(frame: CGRect(x: 0, y: 0, width: hotZoneWidth(), height: 61))
@@ -73,21 +92,36 @@ final class SpacePanelController {
             self?.handleMouseExitedHotZone()
         }
         container.addSubview(hotZoneView)
-        self.hotZoneView = hotZoneView
 
         panel.contentView = container
         panel.orderFrontRegardless()
 
-        self.panel = panel
+        swLog("PANEL", "panel created displayID=\(displayID) frame=\(panel.frame) isVisible=\(panel.isVisible) screen=\(panel.screen?.frame.debugDescription ?? "nil") level=\(panel.level.rawValue)")
 
         panel.onRightClick = { [weak self] windowPoint in
-            self?.handleRightClick(at: windowPoint)
+            self?.handleRightClick(at: windowPoint, displayID: displayID)
         }
+
+        let context = PanelContext(
+            displayIdentifier: displayID,
+            panel: panel,
+            hostingView: hostingView,
+            hotZoneView: hotZoneView,
+            pageState: pageState
+        )
+        panelContexts[displayID] = context
+    }
+
+    private func removePanelContext(for displayID: String) {
+        swLog("PANEL", "removePanelContext displayID=\(displayID)")
+        guard let context = panelContexts[displayID] else { return }
+        context.panel.orderOut(nil)
+        panelContexts.removeValue(forKey: displayID)
     }
 
     // MARK: - Mouse Handlers
 
-    private func handleRightClick(at windowPoint: NSPoint) {
+    private func handleRightClick(at windowPoint: NSPoint, displayID: String) {
         // Suppress when bar is auto-hidden
         if autoHideManager.isEnabled && !autoHideManager.isBarVisible { return }
 
@@ -118,17 +152,17 @@ final class SpacePanelController {
         let iconsPerPage = configManager.iconsPerPage
         guard slotIndex < iconsPerPage else { return }
 
-        // Calculate actual item index (accounting for paging)
+        guard let context = panelContexts[displayID] else { return }
+        let pageState = context.pageState
         let itemIndex = pageState.currentPage * iconsPerPage + slotIndex
-        let snapshot = spaceEngine.snapshot
+        let snapshot = spaceEngine.snapshots[displayID] ?? spaceEngine.snapshot
         guard itemIndex < snapshot.items.count else { return }
         let item = snapshot.items[itemIndex]
 
         // Calculate icon center screen position for balloon anchor
-        guard let panel = self.panel else { return }
         let iconCenterX = iconStripStartX + CGFloat(slotIndex) * iconSlotWidth + SpaceBarConstants.iconSize / 2
         let iconTopY = barTop
-        let screenPoint = panel.convertPoint(toScreen: NSPoint(x: iconCenterX, y: iconTopY))
+        let screenPoint = context.panel.convertPoint(toScreen: NSPoint(x: iconCenterX, y: iconTopY))
 
         showBalloonMenu(for: item, at: screenPoint)
     }
@@ -174,7 +208,7 @@ final class SpacePanelController {
         hideWorkItem = nil
         if autoHideManager.isEnabled && !autoHideManager.isBarVisible {
             autoHideManager.showBar()
-            updateBarView()
+            updateAllBarViews()
         }
     }
 
@@ -183,7 +217,7 @@ final class SpacePanelController {
         let workItem = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             self.autoHideManager.hideBar()
-            self.updateBarView()
+            self.updateAllBarViews()
         }
         hideWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
@@ -200,14 +234,14 @@ final class SpacePanelController {
                     self.hideWorkItem?.cancel()
                     self.hideWorkItem = nil
                 }
-                self.updateBarView()
+                self.updateAllBarViews()
             }
             .store(in: &cancellables)
 
         autoHideManager.$isBarVisible
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.updateBarView()
+                self?.updateAllBarViews()
             }
             .store(in: &cancellables)
     }
@@ -221,15 +255,17 @@ final class SpacePanelController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self = self else { return }
-                self.updateBarView()
-                self.hotZoneView?.frame.size.width = self.hotZoneWidth()
-                // Recompute page for focused app with new grouping
-                let snapshot = self.spaceEngine.snapshot
-                if let focusedBundleID = snapshot.focusedBundleID,
-                   let focusedIndex = snapshot.items.firstIndex(where: { $0.id == focusedBundleID }) {
-                    let targetPage = focusedIndex / self.configManager.iconsPerPage
-                    if targetPage != self.pageState.currentPage {
-                        self.pageState.goToPage(targetPage)
+                self.updateAllBarViews()
+                for (displayID, context) in self.panelContexts {
+                    context.hotZoneView.frame.size.width = self.hotZoneWidth()
+                    // Recompute page for focused app with new grouping
+                    let snapshot = self.spaceEngine.snapshots[displayID] ?? self.spaceEngine.snapshot
+                    if let focusedBundleID = snapshot.focusedBundleID,
+                       let focusedIndex = snapshot.items.firstIndex(where: { $0.id == focusedBundleID }) {
+                        let targetPage = focusedIndex / self.configManager.iconsPerPage
+                        if targetPage != context.pageState.currentPage {
+                            context.pageState.goToPage(targetPage)
+                        }
                     }
                 }
             }
@@ -239,22 +275,26 @@ final class SpacePanelController {
     // MARK: - Engine Observer
 
     private func observeEngine() {
-        spaceEngine.$snapshot
+        spaceEngine.$snapshots
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] snapshot in
-                guard let self = self, let hostingView = self.hostingView else { return }
-                if snapshot.spaceID != self.lastSpaceID {
-                    self.pageState.reset()
-                    self.lastSpaceID = snapshot.spaceID
-                }
-                hostingView.rootView = self.makeSpaceBarView(from: snapshot)
+            .sink { [weak self] snapshots in
+                guard let self = self else { return }
+                for (displayID, snapshot) in snapshots {
+                    guard var context = self.panelContexts[displayID] else { continue }
+                    if snapshot.spaceID != context.lastSpaceID {
+                        context.pageState.reset()
+                        context.lastSpaceID = snapshot.spaceID
+                        self.panelContexts[displayID] = context
+                    }
+                    context.hostingView.rootView = self.makeSpaceBarView(from: snapshot, displayID: displayID, pageState: context.pageState)
 
-                // Auto-navigate to the page containing the focused app
-                if let focusedBundleID = snapshot.focusedBundleID,
-                   let focusedIndex = snapshot.items.firstIndex(where: { $0.id == focusedBundleID }) {
-                    let targetPage = focusedIndex / self.configManager.iconsPerPage
-                    if targetPage != self.pageState.currentPage {
-                        self.pageState.goToPage(targetPage)
+                    // Auto-navigate to the page containing the focused app
+                    if let focusedBundleID = snapshot.focusedBundleID,
+                       let focusedIndex = snapshot.items.firstIndex(where: { $0.id == focusedBundleID }) {
+                        let targetPage = focusedIndex / self.configManager.iconsPerPage
+                        if targetPage != context.pageState.currentPage {
+                            context.pageState.goToPage(targetPage)
+                        }
                     }
                 }
             }
@@ -267,10 +307,35 @@ final class SpacePanelController {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self = self, let panel = self.panel else { return }
-            let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens.first
-            guard let screen else { return }
-            panel.setFrame(screen.frame, display: true)
+            guard let self = self else { return }
+
+            let currentScreens = NSScreen.screens
+            let currentDisplayIDs = Set(currentScreens.compactMap { displayIdentifier(for: $0) })
+            let existingDisplayIDs = Set(self.panelContexts.keys)
+            swLog("PANEL", "screenParametersChanged currentDisplayIDs=\(currentDisplayIDs) existingDisplayIDs=\(existingDisplayIDs)")
+
+            // Remove contexts for disconnected displays
+            for displayID in existingDisplayIDs.subtracting(currentDisplayIDs) {
+                self.removePanelContext(for: displayID)
+            }
+
+            // Add contexts for newly connected displays
+            var hasNewDisplays = false
+            for screen in currentScreens {
+                guard let displayID = displayIdentifier(for: screen) else { continue }
+                if self.panelContexts[displayID] == nil {
+                    self.addPanelContext(for: screen, displayID: displayID)
+                    hasNewDisplays = true
+                } else {
+                    // Resize existing panel to updated screen frame
+                    self.panelContexts[displayID]?.panel.setFrame(screen.frame, display: true)
+                }
+            }
+
+            // Trigger space/snapshot refresh so new displays get their own snapshot
+            if hasNewDisplays {
+                self.spaceEngine.spaceMonitor.refresh()
+            }
         }
     }
 
@@ -285,28 +350,30 @@ final class SpacePanelController {
             + SpaceBarConstants.horizontalPadding * 2 + SpaceBarConstants.leftPadding
     }
 
-    private func updateBarView() {
+    private func updateAllBarViews() {
         balloonPanel?.dismiss()
-        guard let hostingView = self.hostingView else { return }
-        hostingView.rootView = makeSpaceBarView(from: spaceEngine.snapshot)
+        for (displayID, context) in panelContexts {
+            let snapshot = spaceEngine.snapshots[displayID] ?? spaceEngine.snapshot
+            context.hostingView.rootView = makeSpaceBarView(from: snapshot, displayID: displayID, pageState: context.pageState)
+        }
     }
 
-    private func makeSpaceBarView(from snapshot: DockSnapshot) -> SpaceBarView {
+    private func makeSpaceBarView(from snapshot: DockSnapshot, displayID: String, pageState: SpaceBarPageState) -> SpaceBarView {
         SpaceBarView(
-            spaceNumber: "\(snapshot.spaceNumber)",
+            spaceNumber: displayID == spaceEngine.spaceMonitor.mainDisplayIdentifier ? "\(snapshot.spaceNumber)" : "-",
             spaceLabel: snapshot.spaceLabel,
             items: snapshot.items,
             totalItemCount: snapshot.items.count,
             isBarVisible: !autoHideManager.isEnabled || autoHideManager.isBarVisible,
             onEditLabel: { [weak self] in
-                self?.promptForSpaceLabelEdit(snapshot: snapshot)
+                self?.promptForSpaceLabelEdit(snapshot: snapshot, displayID: displayID)
             },
             iconsPerPage: configManager.iconsPerPage,
             pageState: pageState
         )
     }
 
-    private func promptForSpaceLabelEdit(snapshot: DockSnapshot) {
+    private func promptForSpaceLabelEdit(snapshot: DockSnapshot, displayID: String) {
         let alert = NSAlert()
         alert.messageText = "Edit Space Label"
         alert.informativeText = "Update the context text for Space \(snapshot.spaceNumber)."
@@ -322,8 +389,13 @@ final class SpacePanelController {
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else { return }
 
-        spaceEngine.configManager.updateSpaceLabel(
+        let labelKey = ConfigManager.labelKey(
+            displayID: displayID,
             ordinal: snapshot.spaceNumber,
+            mainDisplayID: spaceEngine.spaceMonitor.mainDisplayIdentifier
+        )
+        spaceEngine.configManager.updateSpaceLabel(
+            key: labelKey,
             label: textField.stringValue
         )
     }

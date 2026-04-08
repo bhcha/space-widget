@@ -16,8 +16,12 @@ final class SpaceLayoutBridge {
     }
 
     private func observe() {
-        cancellable = spaceMonitor.$currentSpace
+        cancellable = spaceMonitor.$displaySpaces
             .dropFirst()
+            .map { [weak self] displaySpaces -> ActiveSpace in
+                guard let self = self else { return ActiveSpace(id: 0, ordinal: 1) }
+                return displaySpaces[self.spaceMonitor.mainDisplayIdentifier] ?? ActiveSpace(id: 0, ordinal: 1)
+            }
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] space in

@@ -4,9 +4,11 @@ import SwiftUI
 final class PreferencesWindowController {
     private var window: NSWindow?
     private let configManager: ConfigManager
+    private let templateStore: LayoutTemplateStore
 
-    init(configManager: ConfigManager) {
+    init(configManager: ConfigManager, templateStore: LayoutTemplateStore) {
         self.configManager = configManager
+        self.templateStore = templateStore
     }
 
     func showPreferences() {
@@ -16,7 +18,7 @@ final class PreferencesWindowController {
             return
         }
 
-        let prefsView = PreferencesView(configManager: configManager)
+        let prefsView = PreferencesView(configManager: configManager, templateStore: templateStore)
         let hostingController = NSHostingController(rootView: prefsView)
 
         let window = NSWindow(contentViewController: hostingController)

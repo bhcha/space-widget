@@ -12,38 +12,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var dockController: DockController?
     private var windowShortcutController: WindowShortcutController?
     private var preferencesController: PreferencesWindowController?
+    private var templateStore: LayoutTemplateStore?
+    private var applier: LayoutApplier?
+    private var spaceLayoutBridge: SpaceLayoutBridge?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let configManager = ConfigManager()
-        let spaceEngine = SpaceEngine(configManager: configManager)
+
+        // Create SpaceMonitor first so it can be shared
+        let spaceMonitor = SpaceMonitor()
+        let spaceEngine = SpaceEngine(configManager: configManager, spaceMonitor: spaceMonitor)
         let stateWriter = StateWriter()
         stateWriter.subscribe(to: spaceEngine.$snapshot)
 
         let autoHideManager = AutoHideManager()
         let dockController = DockController()
 
+        // Layout template objects
+        let templateStore = LayoutTemplateStore()
+        templateStore.load()
+        let applier = LayoutApplier()
+        let spaceLayoutBridge = SpaceLayoutBridge(
+            spaceMonitor: spaceMonitor,
+            store: templateStore,
+            applier: applier
+        )
+
         self.configManager = configManager
         self.spaceEngine = spaceEngine
         self.stateWriter = stateWriter
         self.autoHideManager = autoHideManager
         self.dockController = dockController
+        self.templateStore = templateStore
+        self.applier = applier
+        self.spaceLayoutBridge = spaceLayoutBridge
         self.panelController = SpacePanelController(spaceEngine: spaceEngine, autoHideManager: autoHideManager)
-        let preferencesController = PreferencesWindowController(configManager: configManager)
+
+        let preferencesController = PreferencesWindowController(
+            configManager: configManager,
+            templateStore: templateStore
+        )
         self.preferencesController = preferencesController
 
         self.menuBarController = MenuBarController(
             autoHideManager: autoHideManager,
             configManager: configManager,
             dockController: dockController,
-            preferencesController: preferencesController
+            preferencesController: preferencesController,
+            templateStore: templateStore,
+            applier: applier
         )
 
-        let windowShortcutController = WindowShortcutController(configManager: configManager)
+        let windowShortcutController = WindowShortcutController(
+            configManager: configManager,
+            templateStore: templateStore,
+            applier: applier
+        )
         windowShortcutController.registerShortcuts()
         self.windowShortcutController = windowShortcutController
 
-        // Re-register shortcuts when settings change
+        // Re-register shortcuts when shortcut settings change
         configManager.$shortcuts
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak windowShortcutController] _ in
+                windowShortcutController?.registerShortcuts()
+            }
+            .store(in: &cancellables)
+
+        // Re-register shortcuts when templates change
+        templateStore.$templates
             .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak windowShortcutController] _ in

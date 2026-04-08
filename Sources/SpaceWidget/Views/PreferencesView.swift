@@ -2,9 +2,26 @@ import SwiftUI
 
 struct PreferencesView: View {
     @ObservedObject var configManager: ConfigManager
+    @ObservedObject var templateStore: LayoutTemplateStore
     @State private var shortcuts: [String: ShortcutBinding] = [:]
 
     var body: some View {
+        TabView {
+            shortcutsTab
+                .tabItem { Label("Shortcuts", systemImage: "keyboard") }
+
+            LayoutTemplatesView(store: templateStore)
+                .tabItem { Label("Layouts", systemImage: "rectangle.split.3x1") }
+        }
+        .frame(minWidth: 560, minHeight: 480)
+        .onAppear {
+            shortcuts = configManager.shortcuts
+        }
+    }
+
+    // MARK: - Shortcuts Tab
+
+    private var shortcutsTab: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Keyboard Shortcuts")
                 .font(.headline)
@@ -42,10 +59,6 @@ struct PreferencesView: View {
             }
         }
         .padding(20)
-        .frame(width: 380)
-        .onAppear {
-            shortcuts = configManager.shortcuts
-        }
     }
 
     private func shortcutEnabled(for action: WindowAction) -> Binding<Bool> {

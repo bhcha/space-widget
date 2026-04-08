@@ -6,15 +6,21 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let configManager: ConfigManager
     private let dockController: DockController
     private let preferencesController: PreferencesWindowController
+    private let templateStore: LayoutTemplateStore?
+    private let applier: LayoutApplier?
     private var autoHideItem: NSMenuItem?
     private var iconsPerPageItems: [NSMenuItem] = []
     private var dockModeItems: [NSMenuItem] = []
+    private var layoutsSubmenu: NSMenu?
+    private var autoApplyItem: NSMenuItem?
 
-    init(autoHideManager: AutoHideManager, configManager: ConfigManager, dockController: DockController, preferencesController: PreferencesWindowController) {
+    init(autoHideManager: AutoHideManager, configManager: ConfigManager, dockController: DockController, preferencesController: PreferencesWindowController, templateStore: LayoutTemplateStore? = nil, applier: LayoutApplier? = nil) {
         self.autoHideManager = autoHideManager
         self.configManager = configManager
         self.dockController = dockController
         self.preferencesController = preferencesController
+        self.templateStore = templateStore
+        self.applier = applier
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
         configureStatusItem()
@@ -84,6 +90,36 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         dockItem.submenu = dockMenu
         menu.addItem(dockItem)
 
+        // Layouts submenu
+        if let store = templateStore {
+            let layoutsMenu = NSMenu()
+            for template in store.templates {
+                let item = NSMenuItem(
+                    title: template.name,
+                    action: #selector(applyLayout(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = template.id.uuidString
+                layoutsMenu.addItem(item)
+            }
+            layoutsMenu.addItem(NSMenuItem.separator())
+            let autoApplyItem = NSMenuItem(
+                title: "Auto-apply on Space Switch",
+                action: #selector(toggleAutoApply),
+                keyEquivalent: ""
+            )
+            autoApplyItem.target = self
+            autoApplyItem.state = store.autoApplyEnabled ? .on : .off
+            layoutsMenu.addItem(autoApplyItem)
+            self.autoApplyItem = autoApplyItem
+            self.layoutsSubmenu = layoutsMenu
+
+            let layoutsItem = NSMenuItem(title: "Layouts", action: nil, keyEquivalent: "")
+            layoutsItem.submenu = layoutsMenu
+            menu.addItem(layoutsItem)
+        }
+
         menu.addItem(NSMenuItem.separator())
 
         let prefsItem = NSMenuItem(
@@ -121,6 +157,25 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             guard item.tag >= 0, item.tag < modes.count else { continue }
             item.state = (modes[item.tag] == currentDockMode) ? .on : .off
         }
+        // Update layouts submenu
+        if let store = templateStore, let layoutsMenu = layoutsSubmenu {
+            // Remove template items (keep separator + auto-apply at end)
+            while layoutsMenu.items.count > 2 {
+                layoutsMenu.removeItem(at: 0)
+            }
+            // Re-insert template items
+            for (index, template) in store.templates.enumerated() {
+                let item = NSMenuItem(
+                    title: template.name,
+                    action: #selector(applyLayout(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = template.id.uuidString
+                layoutsMenu.insertItem(item, at: index)
+            }
+            autoApplyItem?.state = store.autoApplyEnabled ? .on : .off
+        }
     }
 
     // MARK: - Actions
@@ -137,6 +192,19 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let modes: [DockMode] = [.autoHide, .alwaysHide, .alwaysShow]
         guard sender.tag >= 0, sender.tag < modes.count else { return }
         dockController.apply(mode: modes[sender.tag])
+    }
+
+    @objc private func applyLayout(_ sender: NSMenuItem) {
+        guard let idString = sender.representedObject as? String,
+              let uuid = UUID(uuidString: idString),
+              let template = templateStore?.templates.first(where: { $0.id == uuid })
+        else { return }
+        applier?.apply(template)
+    }
+
+    @objc private func toggleAutoApply() {
+        guard let store = templateStore else { return }
+        store.setAutoApplyEnabled(!store.autoApplyEnabled)
     }
 
     @objc private func openPreferences() {

@@ -97,6 +97,13 @@ SpaceWidget은 이 지점을 보완합니다.
 - Space별 Auto-Apply: Space 전환 시 자동으로 템플릿 적용
 - Launch Closed Apps: 템플릿 적용 시 실행되지 않은 앱 자동 실행
 
+### Hidden Apps
+
+- Preferences → Hidden Apps 탭에서 위젯 바에 표시하지 않을 앱 관리
+- SpaceWidget은 기본 제외 항목 (삭제 불가)
+- Add App 버튼으로 설치된 앱(.app) 선택하여 제외 목록에 추가
+- 스크린 캡처 도구(Flameshot 등) 사용 시 위젯 패널이 캡처에 포함되지 않음
+
 ### Auto-Hide
 
 - 바 자동 숨김 모드 토글
@@ -131,6 +138,7 @@ macOS Dock 동작 제어 (CoreDock private framework 사용):
 
 - **Shortcuts 탭**: 윈도우 스냅 단축키 활성화/비활성화, 새 단축키 녹화, 기본값 복원
 - **Layouts 탭**: 레이아웃 템플릿 생성/편집/삭제, 앱 할당, Space별 Auto-Apply 설정
+- **Hidden Apps 탭**: 위젯 바에서 제외할 앱 관리 (기본 항목 + 사용자 추가)
 
 ### State Export
 
@@ -159,12 +167,12 @@ space-widget/
 │   │   ├── CGSPrivate.swift              ← CGS private API bridge
 │   │   └── AppActions.swift              ← 앱 액션 (new window, close, activate)
 │   ├── Panel/
-│   │   ├── SpacePanel.swift              ← 투명 NSPanel
+│   │   ├── SpacePanel.swift              ← 투명 NSPanel (스크린 캡처 제외)
 │   │   ├── SpacePanelController.swift    ← 멀티 패널 생성/업데이트/제거
 │   │   └── BalloonMenuPanel.swift        ← 우클릭 말풍선 메뉴
 │   ├── Views/
 │   │   ├── SpaceBarView.swift            ← SwiftUI 바 UI
-│   │   ├── PreferencesView.swift         ← 설정 UI (Shortcuts, Layouts 탭)
+│   │   ├── PreferencesView.swift         ← 설정 UI (Shortcuts, Layouts, Hidden Apps 탭)
 │   │   ├── ShortcutRecorderView.swift    ← 단축키 녹화 뷰
 │   │   ├── LayoutTemplatesView.swift     ← 레이아웃 템플릿 편집 뷰
 │   │   └── WindowActionIcon.swift        ← 윈도우 배치 시각화 아이콘

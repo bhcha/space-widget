@@ -17,6 +17,7 @@ final class SpacePanel: NSPanel {
         )
 
         level = .floating
+        sharingType = .none
         backgroundColor = .clear
         hasShadow = false
         collectionBehavior = [.canJoinAllSpaces]

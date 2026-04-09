@@ -64,7 +64,8 @@ final class ConfigManager: ObservableObject {
         "Notification Center",
         "loginwindow",
         "WindowManager",
-        "TextInputMenuAgent"
+        "TextInputMenuAgent",
+        "SpaceWidget"
     ]
 
     private static let defaultSpaceLabels: [String: String] = [
@@ -261,7 +262,8 @@ final class ConfigManager: ObservableObject {
               let array = try? JSONDecoder().decode([String].self, from: data) else {
             return Set(Self.defaultIgnoredApps)
         }
-        return Set(array)
+        // Ensure default ignored apps are always included
+        return Set(array).union(Self.defaultIgnoredApps)
     }
 
     private func loadSpaceLabels() -> [String: String] {

@@ -36,8 +36,8 @@ enum AppActions {
         return false
     }
 
-    static func closeWindowsOnCurrentSpace(pid: pid_t) {
-        forEachWindowOnCurrentSpace(pid: pid, singleSpaceOnly: true) { _, axWindow, _ in
+    static func closeWindowsOnCurrentSpace(pid: pid_t, spaceID: UInt64? = nil) {
+        let body: (_ appElement: AXUIElement, _ axWindow: AXUIElement, _ wid: CGWindowID) -> Bool = { _, axWindow, _ in
             var closeButtonRef: CFTypeRef?
             guard AXUIElementCopyAttributeValue(axWindow, kAXCloseButtonAttribute as CFString, &closeButtonRef) == .success,
                   let closeButtonRef else { return false }
@@ -45,10 +45,15 @@ enum AppActions {
             AXUIElementPerformAction(closeButtonRef as! AXUIElement, kAXPressAction as CFString)
             return false // continue — close all matching windows
         }
+        if let spaceID = spaceID {
+            forEachWindowOnSpace(pid: pid, spaceID: spaceID, singleSpaceOnly: true, body: body)
+        } else {
+            forEachWindowOnCurrentSpace(pid: pid, singleSpaceOnly: true, body: body)
+        }
     }
 
-    static func activateApp(pid: pid_t) {
-        forEachWindowOnCurrentSpace(pid: pid) { appElement, axWindow, wid in
+    static func activateApp(pid: pid_t, spaceID: UInt64? = nil) {
+        let body: (_ appElement: AXUIElement, _ axWindow: AXUIElement, _ wid: CGWindowID) -> Bool = { appElement, axWindow, wid in
             let raiseResult = AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
             let frontResult = AXUIElementSetAttributeValue(appElement, kAXFrontmostAttribute as CFString, kCFBooleanTrue as CFTypeRef)
             if raiseResult == .success && frontResult == .success {
@@ -57,16 +62,21 @@ enum AppActions {
             swLog("ACTIVATE", "AXAction failed pid=\(pid) wid=\(wid) raise=\(raiseResult.rawValue) front=\(frontResult.rawValue), trying next window")
             return false
         }
+        if let spaceID = spaceID {
+            forEachWindowOnSpace(pid: pid, spaceID: spaceID, body: body)
+        } else {
+            forEachWindowOnCurrentSpace(pid: pid, body: body)
+        }
     }
 
-    static func restoreAndActivate(pid: pid_t) {
+    static func restoreAndActivate(pid: pid_t, spaceID: UInt64? = nil) {
         let appElement = AXUIElementCreateApplication(pid)
 
         // Unhide if the app is hidden
         AXUIElementSetAttributeValue(appElement, kAXHiddenAttribute as CFString, kCFBooleanFalse)
 
         // Unminimize windows on the current space
-        forEachWindowOnCurrentSpace(pid: pid) { _, axWindow, _ in
+        let unminimizeBody: (_ appElement: AXUIElement, _ axWindow: AXUIElement, _ wid: CGWindowID) -> Bool = { _, axWindow, _ in
             var minRef: CFTypeRef?
             if AXUIElementCopyAttributeValue(axWindow, kAXMinimizedAttribute as CFString, &minRef) == .success,
                (minRef as? Bool) == true {
@@ -74,10 +84,15 @@ enum AppActions {
             }
             return false // continue — unminimize all windows on this space
         }
+        if let spaceID = spaceID {
+            forEachWindowOnSpace(pid: pid, spaceID: spaceID, body: unminimizeBody)
+        } else {
+            forEachWindowOnCurrentSpace(pid: pid, body: unminimizeBody)
+        }
 
         // Small delay to let restore take effect before raising
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            activateApp(pid: pid)
+            activateApp(pid: pid, spaceID: spaceID)
         }
     }
 

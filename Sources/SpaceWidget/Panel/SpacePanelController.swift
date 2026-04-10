@@ -186,10 +186,10 @@ final class SpacePanelController {
         let screenPoint = context.panel.convertPoint(toScreen: NSPoint(x: iconCenterX, y: iconTopY))
 
         swLog("PANEL", "rightClick HIT item=\(item.name) slotIndex=\(slotIndex) screenPoint=\(screenPoint) displayID=\(displayID)")
-        showBalloonMenu(for: item, at: screenPoint)
+        showBalloonMenu(for: item, at: screenPoint, spaceID: snapshot.spaceID)
     }
 
-    private func showBalloonMenu(for item: DockItem, at screenPoint: NSPoint) {
+    private func showBalloonMenu(for item: DockItem, at screenPoint: NSPoint, spaceID: UInt64? = nil) {
         balloonPanel?.dismiss()
 
         let panel = BalloonMenuPanel(
@@ -212,7 +212,7 @@ final class SpacePanelController {
                 self?.balloonPanel = nil
             },
             onCloseFromSpace: { [weak self, weak panel] in
-                AppActions.closeWindowsOnCurrentSpace(pid: pid)
+                AppActions.closeWindowsOnCurrentSpace(pid: pid, spaceID: spaceID)
                 panel?.dismiss()
                 self?.balloonPanel = nil
             },
@@ -393,7 +393,8 @@ final class SpacePanelController {
                 self?.promptForSpaceLabelEdit(snapshot: snapshot, displayID: displayID)
             },
             iconsPerPage: configManager.iconsPerPage,
-            pageState: pageState
+            pageState: pageState,
+            spaceID: snapshot.spaceID
         )
     }
 

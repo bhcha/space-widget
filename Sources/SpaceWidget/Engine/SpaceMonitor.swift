@@ -57,6 +57,34 @@ final class SpaceMonitor: ObservableObject {
         commitSpaces(resolved)
     }
 
+    /// Full per-display list of type-0 (desktop) spaces with their computed ordinals.
+    /// Returns dict: displayID -> [(spaceID, ordinal)] in ordinal order.
+    func resolveAllSpaceLists() -> [String: [(spaceID: UInt64, ordinal: Int)]] {
+        let cid = CGSMainConnectionID()
+        let displays = CGSCopyManagedDisplaySpaces(cid) as [AnyObject]
+
+        var result: [String: [(spaceID: UInt64, ordinal: Int)]] = [:]
+        for display in displays {
+            guard let displayDict = display as? [String: AnyObject],
+                  let spaces = displayDict["Spaces"] as? [[String: AnyObject]],
+                  let displayIdentifier = displayDict["Display Identifier"] as? String
+            else { continue }
+
+            var list: [(spaceID: UInt64, ordinal: Int)] = []
+            var counter = 1
+            for space in spaces {
+                guard let sid = space["id64"] as? UInt64 else { continue }
+                let listedType = (space["type"] as? NSNumber)?.intValue ?? 0
+                if listedType == 0 {
+                    list.append((spaceID: sid, ordinal: counter))
+                    counter += 1
+                }
+            }
+            result[displayIdentifier] = list
+        }
+        return result
+    }
+
     private func resolveAllSpaces() -> [String: ActiveSpace] {
         let cid = CGSMainConnectionID()
         let displays = CGSCopyManagedDisplaySpaces(cid) as [AnyObject]

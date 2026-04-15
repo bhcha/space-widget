@@ -73,9 +73,18 @@ final class SpaceEngine: ObservableObject {
                         swLog("SPACE", "ignoring bootstrap zero-id event for display=\(displayID) ordinal=\(activeSpace.ordinal)")
                         continue
                     }
-                    let labelKey = ConfigManager.labelKey(displayID: displayID, ordinal: activeSpace.ordinal, mainDisplayID: self.spaceMonitor.mainDisplayIdentifier)
-                    let label = self.configManager.spaceLabels[labelKey] ?? "Untitled"
+                    let label = self.configManager.labelFor(
+                        displayID: displayID,
+                        spaceID: activeSpace.id,
+                        ordinal: activeSpace.ordinal,
+                        mainDisplayID: self.spaceMonitor.mainDisplayIdentifier
+                    ) ?? "Untitled"
                     swLog("SPACE", "detected display=\(displayID) ordinal=\(activeSpace.ordinal) id=\(activeSpace.id) label=\(label)")
+                    let allLists = self.spaceMonitor.resolveAllSpaceLists()
+                    self.configManager.rebindAllOrdinals(
+                        displayLists: allLists,
+                        mainDisplayID: self.spaceMonitor.mainDisplayIdentifier
+                    )
                     self.scheduleSpaceCommit(displayID: displayID, activeSpace)
                 }
             }
@@ -83,7 +92,7 @@ final class SpaceEngine: ObservableObject {
     }
 
     private func observeConfigChanges() {
-        configManager.$spaceLabels
+        configManager.$spaceLabelEntries
             .dropFirst()
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
@@ -236,7 +245,8 @@ final class SpaceEngine: ObservableObject {
 
         let focusedBundleID = preferredFocusedBundleID ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let ignoredApps = configManager.ignoredApps
-        let spaceLabels = configManager.spaceLabels
+        let spaceLabelEntries = configManager.spaceLabelEntries
+        let mainDisplayID = spaceMonitor.mainDisplayIdentifier
         let confirmedSpacesCopy = confirmedSpaces
 
         swLog("FETCH", "started reason=\(reason) displays=\(confirmedSpacesCopy.count) focusedBundleID=\(focusedBundleID ?? "nil")")
@@ -260,8 +270,19 @@ final class SpaceEngine: ObservableObject {
             var newSnapshots: [String: DockSnapshot] = [:]
 
             for (displayID, activeSpace) in confirmedSpacesCopy {
-                let labelKey = ConfigManager.labelKey(displayID: displayID, ordinal: activeSpace.ordinal, mainDisplayID: self.spaceMonitor.mainDisplayIdentifier)
-                let label = spaceLabels[labelKey] ?? "Untitled"
+                let candidates = [displayID, displayID == mainDisplayID ? "__main__" : nil].compactMap { $0 }
+                let label: String = {
+                    if activeSpace.id != 0,
+                       let entry = spaceLabelEntries.first(where: { candidates.contains($0.displayID) && $0.spaceID == activeSpace.id }),
+                       !entry.label.isEmpty {
+                        return entry.label
+                    }
+                    if let entry = spaceLabelEntries.first(where: { candidates.contains($0.displayID) && $0.ordinal == activeSpace.ordinal && $0.spaceID == 0 }),
+                       !entry.label.isEmpty {
+                        return entry.label
+                    }
+                    return "Untitled"
+                }()
 
                 let items = itemsByDisplay[displayID] ?? self.windowListProvider.fetchItems(
                     focusedBundleID: focusedBundleID,

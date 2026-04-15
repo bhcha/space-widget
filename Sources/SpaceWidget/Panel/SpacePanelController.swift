@@ -511,14 +511,12 @@ final class SpacePanelController {
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else { return }
 
-        let labelKey = ConfigManager.labelKey(
-            displayID: displayID,
-            ordinal: snapshot.spaceNumber,
-            mainDisplayID: spaceEngine.spaceMonitor.mainDisplayIdentifier
-        )
         spaceEngine.configManager.updateSpaceLabel(
-            key: labelKey,
-            label: textField.stringValue
+            displayID: displayID,
+            spaceID: snapshot.spaceID,
+            ordinal: snapshot.spaceNumber,
+            label: textField.stringValue,
+            mainDisplayID: spaceEngine.spaceMonitor.mainDisplayIdentifier
         )
     }
 }

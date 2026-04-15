@@ -2,12 +2,35 @@ import Foundation
 import Combine
 import os.lock
 
+// MARK: - Space Label Models (v2)
+
+struct SpaceLabelEntry: Codable, Equatable {
+    var spaceID: UInt64
+    var displayID: String
+    var ordinal: Int
+    var label: String
+
+    enum CodingKeys: String, CodingKey {
+        case spaceID = "space_id"
+        case displayID = "display_id"
+        case ordinal
+        case label
+    }
+}
+
+struct SpaceLabelsFile: Codable {
+    var version: Int
+    var entries: [SpaceLabelEntry]
+}
+
+// MARK: -
+
 final class ConfigManager: ObservableObject {
 
     // MARK: - Published Properties
 
     @Published private(set) var ignoredApps: Set<String> = []
-    @Published private(set) var spaceLabels: [String: String] = [:]
+    @Published private(set) var spaceLabelEntries: [SpaceLabelEntry] = []
     @Published private(set) var appActions: [String: [String: String]] = [:]
     static let iconsPerPageRange = 5...10
     static let defaultIconsPerPage = 5
@@ -70,11 +93,6 @@ final class ConfigManager: ObservableObject {
         "SpaceWidget"
     ]
 
-    private static let defaultSpaceLabels: [String: String] = [
-        "1": "Work",
-        "2": "Browse"
-    ]
-
     private static let defaultAppActions: [String: [String: String]] = [
         "new": [
             "com.apple.finder": "finder_new_window",
@@ -106,7 +124,7 @@ final class ConfigManager: ObservableObject {
         ensureConfigDirectoryAndDefaults()
         writeActiveConfigDirState()
         ignoredApps = loadIgnoredApps()
-        spaceLabels = loadSpaceLabels()
+        spaceLabelEntries = loadSpaceLabelEntries()
         appActions = loadAppActions()
         let rawIPP = loadSettings()["icons_per_page"] ?? Self.defaultIconsPerPage
         iconsPerPage = Swift.min(Swift.max(rawIPP, Self.iconsPerPageRange.lowerBound), Self.iconsPerPageRange.upperBound)
@@ -121,7 +139,7 @@ final class ConfigManager: ObservableObject {
             self.writeActiveConfigDirState()
 
             let ignored = self.loadIgnoredApps()
-            let labels = self.loadSpaceLabels()
+            let entries = self.loadSpaceLabelEntries()
             let actions = self.loadAppActions()
             let rawIPP = self.loadSettings()["icons_per_page"] ?? Self.defaultIconsPerPage
             let ipp = Swift.min(Swift.max(rawIPP, Self.iconsPerPageRange.lowerBound), Self.iconsPerPageRange.upperBound)
@@ -132,8 +150,8 @@ final class ConfigManager: ObservableObject {
                 if self.ignoredApps != ignored {
                     self.ignoredApps = ignored
                 }
-                if self.spaceLabels != labels {
-                    self.spaceLabels = labels
+                if self.spaceLabelEntries != entries {
+                    self.spaceLabelEntries = entries
                 }
                 if self.appActions != actions {
                     self.appActions = actions
@@ -179,41 +197,170 @@ final class ConfigManager: ObservableObject {
 
     // MARK: - Save: Space Labels
 
-    func saveSpaceLabels(_ labels: [String: String]) {
-        queue.async { [weak self] in
-            guard let self = self else { return }
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            guard let data = try? encoder.encode(labels) else { return }
-            self.atomicWrite(data: data, to: self.spaceLabelsURL)
-            DispatchQueue.main.async {
-                self.spaceLabels = labels
-            }
-        }
-    }
-
-    /// Label key for a given display and ordinal.
-    /// Main display uses plain ordinal ("1"), extended displays use "displayID:ordinal".
-    static func labelKey(displayID: String, ordinal: Int, mainDisplayID: String) -> String {
-        if displayID == mainDisplayID {
-            return "\(ordinal)"
-        }
-        return "\(displayID):\(ordinal)"
-    }
-
-    func updateSpaceLabel(key: String, label: String) {
+    /// Apply new entries: updates published property synchronously on main, queues file write async.
+    /// Caller must be on main thread (or this dispatches to main).
+    private func applySpaceLabelEntries(_ entries: [SpaceLabelEntry]) {
         guard Thread.isMainThread else {
-            DispatchQueue.main.async { [weak self] in self?.updateSpaceLabel(key: key, label: label) }
+            DispatchQueue.main.async { [weak self] in
+                self?.applySpaceLabelEntries(entries)
+            }
             return
         }
-        var updated = spaceLabels
-        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            updated.removeValue(forKey: key)
-        } else {
-            updated[key] = trimmed
+        // Sync publish FIRST so subsequent reads (even within the same main run loop tick) see the update
+        if self.spaceLabelEntries != entries {
+            self.spaceLabelEntries = entries
         }
-        saveSpaceLabels(updated)
+        // Queue async file write
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            let file = SpaceLabelsFile(version: 2, entries: entries)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            guard let data = try? encoder.encode(file) else { return }
+            self.atomicWrite(data: data, to: self.spaceLabelsURL)
+        }
+    }
+
+    /// Look up the label for a given display/space. Prefers spaceID match, falls back to ordinal match on the same display.
+    /// Pass mainDisplayID so that migrated v1 entries stored under "__main__" sentinel are also resolved.
+    func labelFor(displayID: String, spaceID: UInt64, ordinal: Int, mainDisplayID: String) -> String? {
+        let candidates = [displayID, displayID == mainDisplayID ? "__main__" : nil].compactMap { $0 }
+        // 1. spaceID match (session-stable)
+        if spaceID != 0, let entry = spaceLabelEntries.first(where: { candidates.contains($0.displayID) && $0.spaceID == spaceID }) {
+            return entry.label.isEmpty ? nil : entry.label
+        }
+        // 2. ordinal fallback — only unresolved entries (spaceID == 0) to avoid stale ordinal surfacing for other spaces
+        if let entry = spaceLabelEntries.first(where: { candidates.contains($0.displayID) && $0.ordinal == ordinal && $0.spaceID == 0 }) {
+            return entry.label.isEmpty ? nil : entry.label
+        }
+        return nil
+    }
+
+    /// Update or insert a label for a specific space. Must be called on main.
+    func updateSpaceLabel(displayID: String, spaceID: UInt64, ordinal: Int, label: String, mainDisplayID: String) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.updateSpaceLabel(displayID: displayID, spaceID: spaceID, ordinal: ordinal, label: label, mainDisplayID: mainDisplayID)
+            }
+            return
+        }
+        var updated = spaceLabelEntries
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Resolve sentinel: a v1-migrated entry stored under "__main__" for the main display
+        let sentinelDisplayID = displayID == mainDisplayID ? "__main__" : nil
+
+        // Find existing entry: first try (displayID, spaceID), then (displayID, ordinal),
+        // then sentinel (__main__, ordinal) for migrated v1 entries on the main display.
+        let idxBySpaceID: Int? = spaceID != 0
+            ? updated.firstIndex { $0.displayID == displayID && $0.spaceID == spaceID }
+            : nil
+        let idxByOrdinal: Int? = updated.firstIndex { $0.displayID == displayID && $0.ordinal == ordinal }
+        let idxBySentinel: Int? = sentinelDisplayID.flatMap { sid in
+            updated.firstIndex { $0.displayID == sid && $0.ordinal == ordinal }
+        }
+
+        // Prefer spaceID match, then real-displayID ordinal, then sentinel
+        let idx: Int? = idxBySpaceID ?? idxByOrdinal ?? idxBySentinel
+
+        if trimmed.isEmpty {
+            if let idx = idx { updated.remove(at: idx) }
+        } else {
+            let entry = SpaceLabelEntry(spaceID: spaceID, displayID: displayID, ordinal: ordinal, label: trimmed)
+            if let idx = idx {
+                // If this was a sentinel entry, remove it and append the real entry so the sentinel is gone
+                if updated[idx].displayID == "__main__" {
+                    updated.remove(at: idx)
+                    updated.append(entry)
+                } else {
+                    updated[idx] = entry
+                }
+            } else {
+                updated.append(entry)
+            }
+        }
+        applySpaceLabelEntries(updated)
+    }
+
+    /// Rebind stored entries against live per-display space lists in a single atomic update.
+    /// This is the correct API when multiple displays need rebinding — avoids the race
+    /// where looping per-display calls each reads a stale array.
+    func rebindAllOrdinals(
+        displayLists: [String: [(spaceID: UInt64, ordinal: Int)]],
+        mainDisplayID: String
+    ) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.rebindAllOrdinals(displayLists: displayLists, mainDisplayID: mainDisplayID)
+            }
+            return
+        }
+
+        var updated = spaceLabelEntries
+        var changed = false
+
+        for (displayID, liveSpaces) in displayLists {
+            let liveSpaceIDs = Set(liveSpaces.map { $0.spaceID })
+            let isMain = (displayID == mainDisplayID)
+
+            func entryBelongsToDisplay(_ entry: SpaceLabelEntry) -> Bool {
+                if entry.displayID == displayID { return true }
+                if isMain && entry.displayID == "__main__" { return true }
+                return false
+            }
+
+            for live in liveSpaces {
+                // Step 1: entry already bound to this live spaceID
+                if let idx = updated.firstIndex(where: {
+                    entryBelongsToDisplay($0) && $0.spaceID == live.spaceID && $0.spaceID != 0
+                }) {
+                    if updated[idx].ordinal != live.ordinal {
+                        updated[idx].ordinal = live.ordinal
+                        changed = true
+                    }
+                    if updated[idx].displayID != displayID {
+                        updated[idx].displayID = displayID
+                        changed = true
+                    }
+                    continue
+                }
+
+                // Step 2: rebind ordinal-match entry whose spaceID is 0 (sentinel) or dead
+                if let idx = updated.firstIndex(where: {
+                    entryBelongsToDisplay($0)
+                        && $0.ordinal == live.ordinal
+                        && ($0.spaceID == 0 || !liveSpaceIDs.contains($0.spaceID))
+                }) {
+                    updated[idx].spaceID = live.spaceID
+                    if updated[idx].displayID != displayID {
+                        updated[idx].displayID = displayID
+                    }
+                    changed = true
+                }
+            }
+        }
+
+        if changed {
+            applySpaceLabelEntries(updated)
+        }
+    }
+
+    /// Refresh ordinal for an observed (displayID, spaceID) pair. Called when SpaceMonitor commits fresh metadata.
+    /// Keeps ordinal fallback accurate for known spaces even as macOS reorders them.
+    func refreshOrdinal(displayID: String, spaceID: UInt64, ordinal: Int) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.refreshOrdinal(displayID: displayID, spaceID: spaceID, ordinal: ordinal)
+            }
+            return
+        }
+        guard spaceID != 0 else { return }
+        guard let idx = spaceLabelEntries.firstIndex(where: { $0.displayID == displayID && $0.spaceID == spaceID }) else { return }
+        if spaceLabelEntries[idx].ordinal != ordinal {
+            var updated = spaceLabelEntries
+            updated[idx].ordinal = ordinal
+            applySpaceLabelEntries(updated)
+        }
     }
 
     // MARK: - Save: App Actions
@@ -289,12 +436,51 @@ final class ConfigManager: ObservableObject {
         return Set(array).union(Self.defaultIgnoredApps)
     }
 
-    private func loadSpaceLabels() -> [String: String] {
-        guard let data = try? Data(contentsOf: spaceLabelsURL),
-              let labels = try? JSONDecoder().decode([String: String].self, from: data) else {
-            return Self.defaultSpaceLabels
+    private func loadSpaceLabelEntries() -> [SpaceLabelEntry] {
+        guard let data = try? Data(contentsOf: spaceLabelsURL) else {
+            return []
         }
-        return labels
+        // Try v2 first (version >= 2 or even unknown future versions — forward compat)
+        if let file = try? JSONDecoder().decode(SpaceLabelsFile.self, from: data),
+           file.version >= 2 {
+            return file.entries
+        }
+        // Migrate from v1: flat [String: String]
+        guard let v1 = try? JSONDecoder().decode([String: String].self, from: data) else {
+            NSLog("[ConfigManager] space_labels.json could not be decoded as v1 or v2 — starting empty")
+            return []
+        }
+        return migrateV1Labels(v1)
+    }
+
+    /// Migration: convert v1 flat dict into v2 entries.
+    /// Without current space state we can't resolve spaceIDs, so entries are written with spaceID=0
+    /// and serve as ordinal-fallback. They will be upgraded to real spaceIDs on the next edit.
+    private func migrateV1Labels(_ v1: [String: String]) -> [SpaceLabelEntry] {
+        var entries: [SpaceLabelEntry] = []
+        for (key, label) in v1 {
+            if key.contains(":") {
+                // Extended display key: "displayID:ordinal"
+                let parts = key.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: true)
+                guard parts.count == 2, let ordinal = Int(parts[1]) else { continue }
+                let displayID = String(parts[0])
+                entries.append(SpaceLabelEntry(spaceID: 0, displayID: displayID, ordinal: ordinal, label: label))
+            } else if let ordinal = Int(key) {
+                // Main display key: plain ordinal → use sentinel so lookup can match it
+                entries.append(SpaceLabelEntry(spaceID: 0, displayID: "__main__", ordinal: ordinal, label: label))
+            }
+        }
+        // Backup the v1 file before overwriting
+        let backupURL = spaceLabelsURL.appendingPathExtension("v1.bak")
+        if let original = try? Data(contentsOf: spaceLabelsURL) {
+            try? original.write(to: backupURL, options: .atomic)
+        }
+        // Write v2 immediately so next launch loads cleanly
+        let file = SpaceLabelsFile(version: 2, entries: entries)
+        if let encoded = try? JSONEncoder().encode(file) {
+            try? encoded.write(to: spaceLabelsURL, options: .atomic)
+        }
+        return entries
     }
 
     private func loadAppActions() -> [String: [String: String]] {
@@ -346,11 +532,12 @@ final class ConfigManager: ObservableObject {
             }
         }
 
-        // Create default space_labels.json if missing
+        // Create default space_labels.json if missing (empty v2 file)
         if !fm.fileExists(atPath: spaceLabelsURL.path) {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            if let data = try? encoder.encode(Self.defaultSpaceLabels) {
+            let defaultFile = SpaceLabelsFile(version: 2, entries: [])
+            if let data = try? encoder.encode(defaultFile) {
                 atomicWrite(data: data, to: spaceLabelsURL)
             }
         }

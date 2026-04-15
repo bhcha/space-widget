@@ -13,6 +13,7 @@ final class ConfigManager: ObservableObject {
     static let defaultIconsPerPage = 5
     @Published private(set) var iconsPerPage: Int = defaultIconsPerPage
     @Published private(set) var shortcuts: [String: ShortcutBinding] = defaultShortcuts
+    @Published private(set) var overlapDetection: OverlapDetection = .default
 
     static let defaultShortcuts: [String: ShortcutBinding] = [
         "leftHalf": ShortcutBinding(keyCode: 0x7B, modifiers: 0x1800, enabled: true),
@@ -53,6 +54,7 @@ final class ConfigManager: ObservableObject {
     private var appActionsURL: URL { Self.configDir.appendingPathComponent("app_actions.json") }
     private var settingsURL: URL { Self.configDir.appendingPathComponent("settings.json") }
     private var shortcutsURL: URL { Self.configDir.appendingPathComponent("shortcuts.json") }
+    private var overlapDetectionURL: URL { Self.configDir.appendingPathComponent("overlap_detection.json") }
 
     // MARK: - Defaults
 
@@ -109,6 +111,7 @@ final class ConfigManager: ObservableObject {
         let rawIPP = loadSettings()["icons_per_page"] ?? Self.defaultIconsPerPage
         iconsPerPage = Swift.min(Swift.max(rawIPP, Self.iconsPerPageRange.lowerBound), Self.iconsPerPageRange.upperBound)
         shortcuts = loadShortcuts()
+        overlapDetection = loadOverlapDetection()
     }
 
     func load() {
@@ -123,6 +126,7 @@ final class ConfigManager: ObservableObject {
             let rawIPP = self.loadSettings()["icons_per_page"] ?? Self.defaultIconsPerPage
             let ipp = Swift.min(Swift.max(rawIPP, Self.iconsPerPageRange.lowerBound), Self.iconsPerPageRange.upperBound)
             let loadedShortcuts = self.loadShortcuts()
+            let loadedOverlapDetection = self.loadOverlapDetection()
 
             DispatchQueue.main.async {
                 if self.ignoredApps != ignored {
@@ -139,6 +143,9 @@ final class ConfigManager: ObservableObject {
                 }
                 if self.shortcuts != loadedShortcuts {
                     self.shortcuts = loadedShortcuts
+                }
+                if self.overlapDetection != loadedOverlapDetection {
+                    self.overlapDetection = loadedOverlapDetection
                 }
             }
         }
@@ -255,6 +262,22 @@ final class ConfigManager: ObservableObject {
         }
     }
 
+    // MARK: - Save: Overlap Detection
+
+    func saveOverlapDetection(_ value: OverlapDetection) {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            let clamped = value.clamped()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            guard let data = try? encoder.encode(clamped) else { return }
+            self.atomicWrite(data: data, to: self.overlapDetectionURL)
+            DispatchQueue.main.async {
+                self.overlapDetection = clamped
+            }
+        }
+    }
+
     // MARK: - Private: File Loading
 
     private func loadIgnoredApps() -> Set<String> {
@@ -297,6 +320,13 @@ final class ConfigManager: ObservableObject {
         var merged = Self.defaultShortcuts
         for (key, value) in loaded { merged[key] = value }
         return merged
+    }
+
+    private func loadOverlapDetection() -> OverlapDetection {
+        guard let data = try? Data(contentsOf: overlapDetectionURL),
+              let loaded = try? JSONDecoder().decode(OverlapDetection.self, from: data)
+        else { return .default }
+        return loaded.clamped()
     }
 
     // MARK: - Private: Directory & Defaults
@@ -347,6 +377,14 @@ final class ConfigManager: ObservableObject {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             if let data = try? encoder.encode(Self.defaultShortcuts) {
                 atomicWrite(data: data, to: shortcutsURL)
+            }
+        }
+
+        if !fm.fileExists(atPath: overlapDetectionURL.path) {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? encoder.encode(OverlapDetection.default) {
+                atomicWrite(data: data, to: overlapDetectionURL)
             }
         }
     }

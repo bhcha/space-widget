@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController?
     private var autoHideManager: AutoHideManager?
     private var dockController: DockController?
+    private var dockGeometryObserver: DockGeometryObserver?
     private var windowShortcutController: WindowShortcutController?
     private var preferencesController: PreferencesWindowController?
     private var templateStore: LayoutTemplateStore?
@@ -27,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let autoHideManager = AutoHideManager()
         let dockController = DockController()
+        let dockGeometryObserver = DockGeometryObserver()
 
         // Layout template objects
         let templateStore = LayoutTemplateStore()
@@ -43,10 +45,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.stateWriter = stateWriter
         self.autoHideManager = autoHideManager
         self.dockController = dockController
+        self.dockGeometryObserver = dockGeometryObserver
         self.templateStore = templateStore
         self.applier = applier
         self.spaceLayoutBridge = spaceLayoutBridge
-        self.panelController = SpacePanelController(spaceEngine: spaceEngine, autoHideManager: autoHideManager)
+        self.panelController = SpacePanelController(spaceEngine: spaceEngine, autoHideManager: autoHideManager, dockGeometry: dockGeometryObserver)
 
         let preferencesController = PreferencesWindowController(
             configManager: configManager,

@@ -27,6 +27,9 @@ struct PreferencesView: View {
 
             hiddenAppsTab
                 .tabItem { Label("Hidden Apps", systemImage: "eye.slash") }
+
+            overlapTab
+                .tabItem { Label("Overlap", systemImage: "rectangle.on.rectangle") }
         }
         .frame(minWidth: 580, minHeight: 660)
         .onAppear {
@@ -251,6 +254,84 @@ struct PreferencesView: View {
                 iconCache = cache
             }
         }
+    }
+
+    // MARK: - Dock Overlap Tab
+
+    private var overlapTab: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Dock Overlap Detection")
+                .font(.headline)
+
+            Text("Automatically reduce icons per page when the widget bar overlaps the macOS Dock.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Toggle("Enable overlap detection", isOn: overlapEnabledBinding)
+                .toggleStyle(.switch)
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Minimum icons:")
+                            .frame(width: 140, alignment: .leading)
+                        Stepper(value: overlapMinIconsBinding, in: 2...max(2, min(10, configManager.iconsPerPage))) {
+                            Text("\(configManager.overlapDetection.minIcons)")
+                                .frame(width: 30, alignment: .leading)
+                        }
+                    }
+                    HStack {
+                        Text("Reduce step:")
+                            .frame(width: 140, alignment: .leading)
+                        Picker("", selection: overlapReduceStepBinding) {
+                            Text("1 icon").tag(1)
+                            Text("2 icons").tag(2)
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 180)
+                    }
+                }
+                .padding(8)
+            }
+            .disabled(!configManager.overlapDetection.enabled)
+
+            Spacer()
+        }
+        .padding(20)
+    }
+
+    private var overlapEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { configManager.overlapDetection.enabled },
+            set: { newValue in
+                var od = configManager.overlapDetection
+                od.enabled = newValue
+                configManager.saveOverlapDetection(od)
+            }
+        )
+    }
+
+    private var overlapMinIconsBinding: Binding<Int> {
+        Binding(
+            get: { configManager.overlapDetection.minIcons },
+            set: { newValue in
+                var od = configManager.overlapDetection
+                od.minIcons = newValue
+                configManager.saveOverlapDetection(od)
+            }
+        )
+    }
+
+    private var overlapReduceStepBinding: Binding<Int> {
+        Binding(
+            get: { configManager.overlapDetection.reduceStep },
+            set: { newValue in
+                var od = configManager.overlapDetection
+                od.reduceStep = newValue
+                configManager.saveOverlapDetection(od)
+            }
+        )
     }
 
     // MARK: - Shortcut Helpers

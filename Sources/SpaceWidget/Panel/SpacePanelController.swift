@@ -10,6 +10,7 @@ final class SpacePanelController {
         let hotZoneView: HotZoneView
         let pageState: SpaceBarPageState
         var lastSpaceID: UInt64? = nil
+        var currentEffectiveIconsPerPage: Int = 5
     }
 
     private var panelContexts: [String: PanelContext] = [:]
@@ -17,6 +18,7 @@ final class SpacePanelController {
     private let spaceEngine: SpaceEngine
     private let autoHideManager: AutoHideManager
     private let configManager: ConfigManager
+    private let dockGeometry: DockGeometryObserver
     private var cancellables = Set<AnyCancellable>()
     private var screenObserver: NSObjectProtocol?
     private var hideWorkItem: DispatchWorkItem?
@@ -27,16 +29,17 @@ final class SpacePanelController {
         }
     }
 
-    init(spaceEngine: SpaceEngine, autoHideManager: AutoHideManager) {
+    init(spaceEngine: SpaceEngine, autoHideManager: AutoHideManager, dockGeometry: DockGeometryObserver) {
         self.spaceEngine = spaceEngine
         self.autoHideManager = autoHideManager
         self.configManager = spaceEngine.configManager
+        self.dockGeometry = dockGeometry
         DispatchQueue.main.async { [weak self] in
             self?.setupPanels()
             self?.observeScreenChanges()
             self?.observeEngine()
             self?.observeAutoHide()
-            self?.observeIconsPerPage()
+            self?.observeLayoutInputs()
         }
     }
 
@@ -65,8 +68,10 @@ final class SpacePanelController {
         let localBounds = CGRect(origin: .zero, size: screenFrame.size)
         let pageState = SpaceBarPageState()
 
+        let initialEffectiveIcons = effectiveIconsPerPage(for: displayID, screen: screen)
+
         let snapshot = spaceEngine.snapshots[displayID] ?? spaceEngine.snapshot
-        let initialView = makeSpaceBarView(from: snapshot, displayID: displayID, pageState: pageState)
+        let initialView = makeSpaceBarView(from: snapshot, displayID: displayID, pageState: pageState, iconsPerPage: initialEffectiveIcons)
         let hostingView = NSHostingView(rootView: initialView)
         hostingView.frame = localBounds
         hostingView.autoresizingMask = [.width, .height]
@@ -84,7 +89,7 @@ final class SpacePanelController {
         hostingView.frame = localBounds
         container.addSubview(hostingView)
 
-        let hotZoneView = HotZoneView(frame: CGRect(x: 0, y: 0, width: hotZoneWidth(), height: 61))
+        let hotZoneView = HotZoneView(frame: CGRect(x: 0, y: 0, width: hotZoneWidth(icons: initialEffectiveIcons), height: 61))
         hotZoneView.onMouseEntered = { [weak self] in
             self?.handleMouseEnteredHotZone()
         }
@@ -102,13 +107,14 @@ final class SpacePanelController {
             self?.handleRightClick(at: windowPoint, displayID: displayID)
         }
 
-        let context = PanelContext(
+        var context = PanelContext(
             displayIdentifier: displayID,
             panel: panel,
             hostingView: hostingView,
             hotZoneView: hotZoneView,
             pageState: pageState
         )
+        context.currentEffectiveIconsPerPage = initialEffectiveIcons
         panelContexts[displayID] = context
     }
 
@@ -161,7 +167,7 @@ final class SpacePanelController {
             return
         }
 
-        let iconsPerPage = configManager.iconsPerPage
+        let iconsPerPage = panelContexts[displayID]?.currentEffectiveIconsPerPage ?? configManager.iconsPerPage
         guard slotIndex < iconsPerPage else {
             swLog("PANEL", "rightClick slot overflow: slotIndex=\(slotIndex) iconsPerPage=\(iconsPerPage)")
             return
@@ -268,28 +274,33 @@ final class SpacePanelController {
             .store(in: &cancellables)
     }
 
-    // MARK: - Icons per Page Observer
+    // MARK: - Layout Inputs Observer
 
-    private func observeIconsPerPage() {
+    private func observeLayoutInputs() {
         configManager.$iconsPerPage
             .dropFirst()
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                guard let self = self else { return }
-                self.updateAllBarViews()
-                for (displayID, context) in self.panelContexts {
-                    context.hotZoneView.frame.size.width = self.hotZoneWidth()
-                    // Recompute page for focused app with new grouping
-                    let snapshot = self.spaceEngine.snapshots[displayID] ?? self.spaceEngine.snapshot
-                    if let focusedBundleID = snapshot.focusedBundleID,
-                       let focusedIndex = snapshot.items.firstIndex(where: { $0.id == focusedBundleID }) {
-                        let targetPage = focusedIndex / self.configManager.iconsPerPage
-                        if targetPage != context.pageState.currentPage {
-                            context.pageState.goToPage(targetPage)
-                        }
-                    }
-                }
+                self?.recomputeAllEffectiveIconsPerPage()
+            }
+            .store(in: &cancellables)
+
+        configManager.$overlapDetection
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.recomputeAllEffectiveIconsPerPage()
+            }
+            .store(in: &cancellables)
+
+        dockGeometry.$current
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.recomputeAllEffectiveIconsPerPage()
             }
             .store(in: &cancellables)
     }
@@ -308,14 +319,24 @@ final class SpacePanelController {
                     if snapshot.spaceID != context.lastSpaceID {
                         context.pageState.reset()
                         context.lastSpaceID = snapshot.spaceID
-                        self.panelContexts[displayID] = context
                     }
-                    context.hostingView.rootView = self.makeSpaceBarView(from: snapshot, displayID: displayID, pageState: context.pageState)
+
+                    // Recompute effective icons-per-page for this display (item count may have changed)
+                    if let screen = NSScreen.screens.first(where: { displayIdentifier(for: $0) == displayID }) {
+                        let newEffective = self.effectiveIconsPerPage(for: displayID, screen: screen)
+                        if newEffective != context.currentEffectiveIconsPerPage {
+                            context.currentEffectiveIconsPerPage = newEffective
+                            context.hotZoneView.frame.size.width = self.hotZoneWidth(icons: newEffective)
+                        }
+                    }
+                    self.panelContexts[displayID] = context
+
+                    context.hostingView.rootView = self.makeSpaceBarView(from: snapshot, displayID: displayID, pageState: context.pageState, iconsPerPage: context.currentEffectiveIconsPerPage)
 
                     // Auto-navigate to the page containing the focused app
                     if let focusedBundleID = snapshot.focusedBundleID,
                        let focusedIndex = snapshot.items.firstIndex(where: { $0.id == focusedBundleID }) {
-                        let targetPage = focusedIndex / self.configManager.iconsPerPage
+                        let targetPage = focusedIndex / max(context.currentEffectiveIconsPerPage, 1)
                         if targetPage != context.pageState.currentPage {
                             context.pageState.goToPage(targetPage)
                         }
@@ -360,13 +381,15 @@ final class SpacePanelController {
             if hasNewDisplays {
                 self.spaceEngine.spaceMonitor.refresh()
             }
+
+            self.recomputeAllEffectiveIconsPerPage()
         }
     }
 
     // MARK: - View Helpers
 
-    private func hotZoneWidth() -> CGFloat {
-        let count = CGFloat(configManager.iconsPerPage)
+    private func hotZoneWidth(icons: Int? = nil) -> CGFloat {
+        let count = CGFloat(icons ?? configManager.iconsPerPage)
         let iconStrip = count * SpaceBarConstants.iconSize + (count - 1) * SpaceBarConstants.iconSpacing
         // icon strip + left sections (space number, label, separator) + padding
         return iconStrip + SpaceBarConstants.spaceNumberWidth + SpaceBarConstants.labelWidth
@@ -378,11 +401,11 @@ final class SpacePanelController {
         balloonPanel?.dismiss()
         for (displayID, context) in panelContexts {
             let snapshot = spaceEngine.snapshots[displayID] ?? spaceEngine.snapshot
-            context.hostingView.rootView = makeSpaceBarView(from: snapshot, displayID: displayID, pageState: context.pageState)
+            context.hostingView.rootView = makeSpaceBarView(from: snapshot, displayID: displayID, pageState: context.pageState, iconsPerPage: context.currentEffectiveIconsPerPage)
         }
     }
 
-    private func makeSpaceBarView(from snapshot: DockSnapshot, displayID: String, pageState: SpaceBarPageState) -> SpaceBarView {
+    private func makeSpaceBarView(from snapshot: DockSnapshot, displayID: String, pageState: SpaceBarPageState, iconsPerPage: Int) -> SpaceBarView {
         SpaceBarView(
             spaceNumber: displayID == spaceEngine.spaceMonitor.mainDisplayIdentifier ? "\(snapshot.spaceNumber)" : "-",
             spaceLabel: snapshot.spaceLabel,
@@ -392,10 +415,84 @@ final class SpacePanelController {
             onEditLabel: { [weak self] in
                 self?.promptForSpaceLabelEdit(snapshot: snapshot, displayID: displayID)
             },
-            iconsPerPage: configManager.iconsPerPage,
+            iconsPerPage: iconsPerPage,
             pageState: pageState,
             spaceID: snapshot.spaceID
         )
+    }
+
+    // MARK: - Overlap Detection
+
+    private func effectiveIconsPerPage(for displayID: String, screen: NSScreen) -> Int {
+        let configured = configManager.iconsPerPage
+        let od = configManager.overlapDetection
+        guard od.enabled,
+              let dock = dockGeometry.current,
+              dock.isVisible,
+              dock.displayID == displayID else {
+            return configured
+        }
+        let floor = min(od.minIcons, configured)
+        let snapshot = spaceEngine.snapshots[displayID] ?? spaceEngine.snapshot
+        let itemCount = snapshot.items.count
+        var n = configured
+        while n > floor {
+            let pageCount = itemCount <= 0 ? 0 : Int(ceil(Double(itemCount) / Double(n)))
+            let rect = computeBarRect(screen: screen, icons: n, pageCount: pageCount)
+            if !rect.intersects(dock.frame) { return n }
+            n = max(floor, n - od.reduceStep)
+            if n == floor { break }
+        }
+        // Final check at floor — if still overlapping, reduction is futile (e.g. left-side Dock
+        // covers bar's anchor). Fall back to configured to avoid a uselessly truncated bar.
+        let floorPageCount = itemCount <= 0 ? 0 : Int(ceil(Double(itemCount) / Double(n)))
+        let floorRect = computeBarRect(screen: screen, icons: n, pageCount: floorPageCount)
+        if !floorRect.intersects(dock.frame) { return n }
+        return configured
+    }
+
+    private func computeBarRect(screen: NSScreen, icons: Int, pageCount: Int = 0) -> CGRect {
+        let count = CGFloat(max(icons, 1))
+        let iconStrip = count * SpaceBarConstants.iconSize + (count - 1) * SpaceBarConstants.iconSpacing
+        var barWidth = iconStrip
+            + SpaceBarConstants.spaceNumberWidth
+            + SpaceBarConstants.labelWidth
+            + SpaceBarConstants.separatorWidth
+            + SpaceBarConstants.sectionSpacing * 3
+            + SpaceBarConstants.horizontalPadding * 2
+        if pageCount > 1 {
+            barWidth += SpaceBarConstants.sectionSpacing
+                + CGFloat(pageCount) * SpaceBarConstants.pageDotSize
+                + CGFloat(pageCount - 1) * SpaceBarConstants.pageDotSpacing
+        }
+        // Bar is drawn at .bottomLeading inside a full-screen panel with leftPadding/bottomPadding offsets.
+        let screenFrame = screen.frame
+        let x = screenFrame.origin.x + SpaceBarConstants.leftPadding
+        let y = screenFrame.origin.y + SpaceBarConstants.bottomPadding
+        return CGRect(x: x, y: y, width: barWidth, height: SpaceBarConstants.barHeight)
+    }
+
+    private func recomputeAllEffectiveIconsPerPage() {
+        for (displayID, var ctx) in panelContexts {
+            guard let screen = NSScreen.screens.first(where: { displayIdentifier(for: $0) == displayID }) else { continue }
+            let newValue = effectiveIconsPerPage(for: displayID, screen: screen)
+            if newValue != ctx.currentEffectiveIconsPerPage {
+                ctx.currentEffectiveIconsPerPage = newValue
+                panelContexts[displayID] = ctx
+            }
+        }
+        updateAllBarViews()
+        for (displayID, context) in panelContexts {
+            context.hotZoneView.frame.size.width = hotZoneWidth(icons: context.currentEffectiveIconsPerPage)
+            let snapshot = spaceEngine.snapshots[displayID] ?? spaceEngine.snapshot
+            if let focusedBundleID = snapshot.focusedBundleID,
+               let focusedIndex = snapshot.items.firstIndex(where: { $0.id == focusedBundleID }) {
+                let targetPage = focusedIndex / max(context.currentEffectiveIconsPerPage, 1)
+                if targetPage != context.pageState.currentPage {
+                    context.pageState.goToPage(targetPage)
+                }
+            }
+        }
     }
 
     private func promptForSpaceLabelEdit(snapshot: DockSnapshot, displayID: String) {

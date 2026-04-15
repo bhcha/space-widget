@@ -13,6 +13,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private var dockModeItems: [NSMenuItem] = []
     private var layoutsSubmenu: NSMenu?
     private var autoApplyItem: NSMenuItem?
+    private var overlapItem: NSMenuItem?
 
     init(autoHideManager: AutoHideManager, configManager: ConfigManager, dockController: DockController, preferencesController: PreferencesWindowController, templateStore: LayoutTemplateStore? = nil, applier: LayoutApplier? = nil) {
         self.autoHideManager = autoHideManager
@@ -66,6 +67,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let iconsPerPageItem = NSMenuItem(title: "Icons per Page", action: nil, keyEquivalent: "")
         iconsPerPageItem.submenu = iconsPerPageMenu
         menu.addItem(iconsPerPageItem)
+
+        let overlapItem = NSMenuItem(
+            title: "Dock Overlap Detection",
+            action: #selector(toggleOverlapDetection),
+            keyEquivalent: ""
+        )
+        overlapItem.target = self
+        overlapItem.state = configManager.overlapDetection.enabled ? .on : .off
+        menu.addItem(overlapItem)
+        self.overlapItem = overlapItem
 
         let dockMenu = NSMenu()
         let dockModeLabels = ["Auto Hide", "Always Hide", "Always Show"]
@@ -151,6 +162,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         for item in iconsPerPageItems {
             item.state = (item.tag == current) ? .on : .off
         }
+        overlapItem?.state = configManager.overlapDetection.enabled ? .on : .off
         let currentDockMode = dockController.currentMode
         let modes: [DockMode] = [.autoHide, .alwaysHide, .alwaysShow]
         for item in dockModeItems {
@@ -182,6 +194,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func toggleAutoHide() {
         autoHideManager.toggle()
+    }
+
+    @objc private func toggleOverlapDetection() {
+        var od = configManager.overlapDetection
+        od.enabled.toggle()
+        configManager.saveOverlapDetection(od)
     }
 
     @objc private func changeIconsPerPage(_ sender: NSMenuItem) {

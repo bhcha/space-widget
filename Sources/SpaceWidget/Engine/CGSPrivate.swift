@@ -8,6 +8,9 @@ func CGSMainConnectionID() -> UInt32
 @_silgen_name("CGSCopyManagedDisplaySpaces")
 func CGSCopyManagedDisplaySpaces(_ cid: UInt32) -> CFArray
 
+@_silgen_name("CGSCopyActiveMenuBarDisplayIdentifier")
+func CGSCopyActiveMenuBarDisplayIdentifier(_ cid: UInt32) -> CFString?
+
 @_silgen_name("CGSManagedDisplayGetCurrentSpace")
 func CGSManagedDisplayGetCurrentSpace(_ cid: UInt32, _ display: CFString) -> UInt64
 
@@ -17,7 +20,7 @@ func CGSManagedDisplayGetCurrentSpace(_ cid: UInt32, _ display: CFString) -> UIn
 func CGSSpaceGetType(_ cid: UInt32, _ sid: UInt64) -> Int32
 
 /// Returns the spaces a window belongs to.
-/// mask: 0x7 = all spaces, 0x1 = visible spaces
+/// Mask: 0x7 = kCGSAllSpacesMask (current | others | user). 0x10000 = CGSSpaceVisible.
 @_silgen_name("CGSCopySpacesForWindows")
 func CGSCopySpacesForWindows(_ cid: UInt32, _ mask: Int32, _ windowIDs: CFArray) -> CFArray?
 

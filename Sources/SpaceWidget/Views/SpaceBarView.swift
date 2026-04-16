@@ -52,6 +52,7 @@ struct SpaceBarView: View {
     let totalItemCount: Int
     let isBarVisible: Bool
     let onEditLabel: () -> Void
+    let onSelectSpaceNumber: () -> Void
     let iconsPerPage: Int
 
     @ObservedObject var pageState: SpaceBarPageState
@@ -145,10 +146,13 @@ struct SpaceBarView: View {
 
     private var barContent: some View {
         HStack(spacing: SpaceBarConstants.sectionSpacing) {
-            Text(spaceNumber)
-                .font(.system(size: 14, weight: .medium, design: .rounded))
-                .foregroundColor(.white.opacity(0.9))
-                .frame(width: SpaceBarConstants.spaceNumberWidth, alignment: .center)
+            Button(action: onSelectSpaceNumber) {
+                Text(spaceNumber)
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.9))
+                    .frame(width: SpaceBarConstants.spaceNumberWidth, alignment: .center)
+            }
+            .buttonStyle(.plain)
 
             Button(action: onEditLabel) {
                 Text(spaceLabel)

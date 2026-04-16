@@ -73,7 +73,7 @@ final class SpaceMonitor: ObservableObject {
             var list: [(spaceID: UInt64, ordinal: Int)] = []
             var counter = 1
             for space in spaces {
-                guard let sid = space["id64"] as? UInt64 else { continue }
+                guard let sid = (space["ManagedSpaceID"] as? UInt64) ?? (space["id64"] as? UInt64) else { continue }
                 let listedType = (space["type"] as? NSNumber)?.intValue ?? 0
                 if listedType == 0 {
                     list.append((spaceID: sid, ordinal: counter))
@@ -112,7 +112,7 @@ final class SpaceMonitor: ObservableObject {
             var isListed = false
 
             for space in spaces {
-                guard let sid = space["id64"] as? UInt64 else { continue }
+                guard let sid = (space["ManagedSpaceID"] as? UInt64) ?? (space["id64"] as? UInt64) else { continue }
                 let listedType = (space["type"] as? NSNumber)?.intValue ?? 0
                 if listedType == 0 {
                     if sid == spaceID {

@@ -91,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 windowShortcutController?.registerShortcuts()
             }
             .store(in: &cancellables)
+
     }
 
     func applicationWillTerminate(_ notification: Notification) {

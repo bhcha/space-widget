@@ -37,8 +37,8 @@ final class SpacePanel: NSPanel {
         swLog("PANEL", "mouseDown at=\(event.locationInWindow) screen=\(screen?.frame.debugDescription ?? "nil")")
         if event.modifierFlags.contains(.control) {
             onRightClick?(event.locationInWindow)
-        } else {
-            super.mouseDown(with: event)
+            return
         }
+        super.mouseDown(with: event)
     }
 }

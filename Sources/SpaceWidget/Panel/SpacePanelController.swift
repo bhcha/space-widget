@@ -195,6 +195,74 @@ final class SpacePanelController {
         showBalloonMenu(for: item, at: screenPoint, spaceID: snapshot.spaceID)
     }
 
+    private func showDesktopListForDisplay(displayID: String) {
+        let allSpaceLists = spaceEngine.spaceMonitor.resolveAllSpaceLists()
+        guard let spaceList = allSpaceLists[displayID], !spaceList.isEmpty else {
+            swLog("PANEL", "showDesktopList no spaces found for displayID=\(displayID)")
+            return
+        }
+
+        let mainDisplayID = spaceEngine.spaceMonitor.mainDisplayIdentifier
+        let currentSpaceID = spaceEngine.spaceMonitor.displaySpaces[displayID]?.id ?? 0
+
+        let items: [DesktopListItem] = spaceList.map { entry in
+            let sid = entry.spaceID
+            let ord = entry.ordinal
+            let label = configManager.labelFor(
+                displayID: displayID,
+                spaceID: sid,
+                ordinal: ord,
+                mainDisplayID: mainDisplayID
+            ) ?? ""
+            let isCurrent = (sid == currentSpaceID)
+            return DesktopListItem(id: sid, ordinal: ord, label: label, isCurrent: isCurrent)
+        }
+
+        guard let context = panelContexts[displayID] else { return }
+        let panel = context.panel
+        let anchorWindowX = SpaceBarConstants.leftPadding
+            + SpaceBarConstants.horizontalPadding
+            + SpaceBarConstants.spaceNumberWidth / 2
+        let anchorWindowY = SpaceBarConstants.bottomPadding + SpaceBarConstants.barHeight
+        let anchorWindowPoint = NSPoint(x: anchorWindowX, y: anchorWindowY)
+        let anchorScreenPoint = panel.convertPoint(toScreen: anchorWindowPoint)
+
+        swLog("PANEL", "showDesktopList displayID=\(displayID) spaces=\(items.count) currentSpaceID=\(currentSpaceID)")
+        showDesktopListMenu(displayID: displayID, items: items, currentSpaceID: currentSpaceID, at: anchorScreenPoint)
+    }
+
+    private func showDesktopListMenu(
+        displayID: String,
+        items: [DesktopListItem],
+        currentSpaceID: UInt64,
+        at screenPoint: NSPoint
+    ) {
+        balloonPanel?.dismiss()
+        let panel = BalloonMenuPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: true
+        )
+        self.balloonPanel = panel
+
+        let content = DesktopListMenuContent(
+            items: items,
+            currentSpaceID: currentSpaceID,
+            onSelect: { [weak self, weak panel] item in
+                panel?.dismiss()
+                self?.balloonPanel = nil
+                guard item.spaceID != currentSpaceID else { return }
+                SpaceSwitcher.switchTo(
+                    spaceID: item.spaceID,
+                    ordinal: item.ordinal,
+                    displayID: displayID
+                )
+            }
+        )
+        panel.show(content: content, anchorScreenPoint: screenPoint)
+    }
+
     private func showBalloonMenu(for item: DockItem, at screenPoint: NSPoint, spaceID: UInt64? = nil) {
         balloonPanel?.dismiss()
 
@@ -414,6 +482,9 @@ final class SpacePanelController {
             isBarVisible: !autoHideManager.isEnabled || autoHideManager.isBarVisible,
             onEditLabel: { [weak self] in
                 self?.promptForSpaceLabelEdit(snapshot: snapshot, displayID: displayID)
+            },
+            onSelectSpaceNumber: { [weak self] in
+                self?.showDesktopListForDisplay(displayID: displayID)
             },
             iconsPerPage: iconsPerPage,
             pageState: pageState,

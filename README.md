@@ -376,6 +376,16 @@ make migrate              # 설정 마이그레이션
 make clean                # 클린
 ```
 
+## Acknowledgements
+
+다음 오픈소스 프로젝트의 구현을 참고했습니다:
+
+| 프로젝트 | 참고 내용 |
+|---------|----------|
+| [WhichSpace](https://github.com/gechr/WhichSpace) | CGEvent dock-swipe 합성을 통한 Space 전환 기법. 비공개 CGEventField 인덱스와 gesture phase 시퀀스 참조 |
+| [yabai](https://github.com/koekeishiya/yabai) | CGS private API 사용 패턴 (`CGSCopyManagedDisplaySpaces`, `CGSSpaceGetType` 등) |
+| [Rectangle](https://github.com/rxhanson/Rectangle) | AX API 기반 윈도우 스냅 및 화면 영역 계산 로직 참조 |
+
 ## Notes
 
 - macOS 전용 프로젝트입니다.

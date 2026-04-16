@@ -67,4 +67,8 @@ final class WindowElement {
         position = rect.origin
         size = rect.size  // re-set in case position change affected constraints
     }
+
+    func raise() {
+        AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+    }
 }

@@ -427,6 +427,9 @@ final class SpacePanelController {
             let existingDisplayIDs = Set(self.panelContexts.keys)
             swLog("PANEL", "screenParametersChanged currentDisplayIDs=\(currentDisplayIDs) existingDisplayIDs=\(existingDisplayIDs)")
 
+            // Keep ConfigManager's live display set current for labelFor() fallback
+            self.configManager.updateLiveDisplays(currentDisplayIDs)
+
             // Remove contexts for disconnected displays
             for displayID in existingDisplayIDs.subtracting(currentDisplayIDs) {
                 self.removePanelContext(for: displayID)

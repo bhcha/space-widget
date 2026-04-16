@@ -37,6 +37,7 @@ final class ConfigManager: ObservableObject {
     @Published private(set) var iconsPerPage: Int = defaultIconsPerPage
     @Published private(set) var shortcuts: [String: ShortcutBinding] = defaultShortcuts
     @Published private(set) var overlapDetection: OverlapDetection = .default
+    private(set) var liveDisplayIDs: Set<String> = []
 
     static let defaultShortcuts: [String: ShortcutBinding] = [
         "leftHalf": ShortcutBinding(keyCode: 0x7B, modifiers: 0x1800, enabled: true),
@@ -225,11 +226,30 @@ final class ConfigManager: ObservableObject {
     /// Pass mainDisplayID so that migrated v1 entries stored under "__main__" sentinel are also resolved.
     func labelFor(displayID: String, spaceID: UInt64, ordinal: Int, mainDisplayID: String) -> String? {
         let candidates = [displayID, displayID == mainDisplayID ? "__main__" : nil].compactMap { $0 }
-        // 1. spaceID match (session-stable)
+
+        // Tier 0: dead-display override (read-only, non-destructive).
+        // In single-display mode, if a disconnected display had MORE labels than the
+        // current display, prefer the dead display's label by ordinal. This handles
+        // unplugging a primary monitor: the secondary (now sole) display should show
+        // the primary's workspace labels instead of its own minimal set.
+        // Checked BEFORE Tier 1 because the current display may have its own label
+        // (e.g. "0" from the extension) that would otherwise take priority.
+        if liveDisplayIDs.count <= 1 {
+            let ownLabelCount = spaceLabelEntries.filter { candidates.contains($0.displayID) && !$0.label.isEmpty }.count
+            let deadEntries = spaceLabelEntries.filter { !liveDisplayIDs.contains($0.displayID) && $0.displayID != "__main__" }
+            let deadByDisplay = Dictionary(grouping: deadEntries.filter { !$0.label.isEmpty }, by: { $0.displayID })
+            if let (_, entries) = deadByDisplay.max(by: { $0.value.count < $1.value.count }),
+               entries.count > ownLabelCount,
+               let entry = entries.first(where: { $0.ordinal == ordinal }) {
+                return entry.label
+            }
+        }
+
+        // Tier 1: spaceID match on same display (session-stable)
         if spaceID != 0, let entry = spaceLabelEntries.first(where: { candidates.contains($0.displayID) && $0.spaceID == spaceID }) {
             return entry.label.isEmpty ? nil : entry.label
         }
-        // 2. ordinal fallback — only unresolved entries (spaceID == 0) to avoid stale ordinal surfacing for other spaces
+        // Tier 2: ordinal fallback on same display — only sentinel entries (spaceID == 0)
         if let entry = spaceLabelEntries.first(where: { candidates.contains($0.displayID) && $0.ordinal == ordinal && $0.spaceID == 0 }) {
             return entry.label.isEmpty ? nil : entry.label
         }
@@ -282,6 +302,12 @@ final class ConfigManager: ObservableObject {
         applySpaceLabelEntries(updated)
     }
 
+    /// Update the set of currently connected displays. Called from screen-change observers
+    /// so that labelFor()'s dead-display fallback stays current even before a space change fires.
+    func updateLiveDisplays(_ displayIDs: Set<String>) {
+        liveDisplayIDs = displayIDs
+    }
+
     /// Rebind stored entries against live per-display space lists in a single atomic update.
     /// This is the correct API when multiple displays need rebinding — avoids the race
     /// where looping per-display calls each reads a stale array.
@@ -295,6 +321,9 @@ final class ConfigManager: ObservableObject {
             }
             return
         }
+
+        // Track live displays for labelFor() read-time fallback
+        liveDisplayIDs = Set(displayLists.keys)
 
         var updated = spaceLabelEntries
         var changed = false
@@ -310,7 +339,7 @@ final class ConfigManager: ObservableObject {
             }
 
             for live in liveSpaces {
-                // Step 1: entry already bound to this live spaceID
+                // Step 1: entry already bound to this live spaceID on same display
                 if let idx = updated.firstIndex(where: {
                     entryBelongsToDisplay($0) && $0.spaceID == live.spaceID && $0.spaceID != 0
                 }) {
@@ -325,7 +354,7 @@ final class ConfigManager: ObservableObject {
                     continue
                 }
 
-                // Step 2: rebind ordinal-match entry whose spaceID is 0 (sentinel) or dead
+                // Step 2: rebind same-display ordinal-match entry whose spaceID is 0 or dead
                 if let idx = updated.firstIndex(where: {
                     entryBelongsToDisplay($0)
                         && $0.ordinal == live.ordinal

@@ -151,6 +151,7 @@ struct SpaceBarView: View {
                     .font(.system(size: 14, weight: .medium, design: .rounded))
                     .foregroundColor(.white.opacity(0.9))
                     .frame(width: SpaceBarConstants.spaceNumberWidth, alignment: .center)
+                    .contentShape(Rectangle().inset(by: -10))
             }
             .buttonStyle(.plain)
 

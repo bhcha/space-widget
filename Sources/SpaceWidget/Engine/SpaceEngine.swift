@@ -245,9 +245,19 @@ final class SpaceEngine: ObservableObject {
 
         let focusedBundleID = preferredFocusedBundleID ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let ignoredApps = configManager.ignoredApps
-        let spaceLabelEntries = configManager.spaceLabelEntries
         let mainDisplayID = spaceMonitor.mainDisplayIdentifier
         let confirmedSpacesCopy = confirmedSpaces
+
+        // Pre-resolve labels on main thread (ConfigManager is main-thread-only)
+        let labelsByDisplay: [String: String] = confirmedSpacesCopy.reduce(into: [:]) { result, pair in
+            let (displayID, activeSpace) = pair
+            result[displayID] = configManager.labelFor(
+                displayID: displayID,
+                spaceID: activeSpace.id,
+                ordinal: activeSpace.ordinal,
+                mainDisplayID: mainDisplayID
+            ) ?? "Untitled"
+        }
 
         swLog("FETCH", "started reason=\(reason) displays=\(confirmedSpacesCopy.count) focusedBundleID=\(focusedBundleID ?? "nil")")
 
@@ -270,19 +280,7 @@ final class SpaceEngine: ObservableObject {
             var newSnapshots: [String: DockSnapshot] = [:]
 
             for (displayID, activeSpace) in confirmedSpacesCopy {
-                let candidates = [displayID, displayID == mainDisplayID ? "__main__" : nil].compactMap { $0 }
-                let label: String = {
-                    if activeSpace.id != 0,
-                       let entry = spaceLabelEntries.first(where: { candidates.contains($0.displayID) && $0.spaceID == activeSpace.id }),
-                       !entry.label.isEmpty {
-                        return entry.label
-                    }
-                    if let entry = spaceLabelEntries.first(where: { candidates.contains($0.displayID) && $0.ordinal == activeSpace.ordinal && $0.spaceID == 0 }),
-                       !entry.label.isEmpty {
-                        return entry.label
-                    }
-                    return "Untitled"
-                }()
+                let label = labelsByDisplay[displayID] ?? "Untitled"
 
                 let items = itemsByDisplay[displayID] ?? self.windowListProvider.fetchItems(
                     focusedBundleID: focusedBundleID,

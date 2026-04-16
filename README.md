@@ -42,7 +42,8 @@ SpaceWidget은 이 지점을 보완합니다.
 - 확장 디스플레이: 별도 Space로 인식, 독립 라벨 관리
 - 확장 디스플레이 Space 번호는 `-`로 표시
 - 디스플레이 연결/분리 시 패널 자동 추가/제거
-- 라벨 키: 주 디스플레이 `"1"`, 확장 디스플레이 `"displayID:ordinal"` (하위 호환)
+- 라벨은 안정적인 spaceID에 고정 (Space 순서 변경/풀스크린 전환 시에도 라벨 유지)
+- Space 순서 변경 시 ordinal 자동 재바인딩
 
 ### Running App Snapshot
 
@@ -103,6 +104,21 @@ SpaceWidget은 이 지점을 보완합니다.
 - SpaceWidget은 기본 제외 항목 (삭제 불가)
 - Add App 버튼으로 설치된 앱(.app) 선택하여 제외 목록에 추가
 - 스크린 캡처 도구(Flameshot 등) 사용 시 위젯 패널이 캡처에 포함되지 않음
+
+### Desktop Switcher
+
+- Space 번호 클릭 시 해당 디스플레이의 전체 데스크탑 목록 팝업 표시
+- 목록에서 데스크탑 선택 시 CGEvent dock-swipe 합성으로 즉시 전환
+- Ctrl+N 키보드 단축키 폴백 (시스템 설정에서 활성화된 경우)
+- 멀티 디스플레이: active display 검증 가드로 잘못된 디스플레이 전환 방지
+- 전환 후 실제 Space 변경 검증 (실패 시 자동 폴백)
+
+### Dock Overlap Detection
+
+- Dock과 위젯 바가 겹칠 때 페이지당 아이콘 수를 자동으로 축소
+- 설정: `enabled` (활성화), `min_icons` (최소 아이콘 수 2~10), `reduce_step` (축소 단위 1~2)
+- Dock 위치/크기 변경 시 실시간 재계산
+- 축소해도 겹침이 해소되지 않으면 원래 설정 유지
 
 ### Auto-Hide
 
@@ -165,11 +181,13 @@ space-widget/
 │   │   ├── WindowListProvider.swift      ← 앱 목록 수집 (화면별 필터링)
 │   │   ├── SpaceEngine.swift             ← 멀티 디스플레이 snapshot 파이프라인
 │   │   ├── CGSPrivate.swift              ← CGS private API bridge
-│   │   └── AppActions.swift              ← 앱 액션 (new window, close, activate)
+│   │   ├── AppActions.swift              ← 앱 액션 (new window, close, activate)
+│   │   └── SpaceSwitcher.swift          ← CGEvent dock-swipe 기반 Space 전환
 │   ├── Panel/
 │   │   ├── SpacePanel.swift              ← 투명 NSPanel (스크린 캡처 제외)
 │   │   ├── SpacePanelController.swift    ← 멀티 패널 생성/업데이트/제거
-│   │   └── BalloonMenuPanel.swift        ← 우클릭 말풍선 메뉴
+│   │   ├── BalloonMenuPanel.swift        ← 우클릭 말풍선 메뉴
+│   │   └── DesktopListMenuContent.swift ← 데스크탑 리스트 팝업 UI
 │   ├── Views/
 │   │   ├── SpaceBarView.swift            ← SwiftUI 바 UI
 │   │   ├── PreferencesView.swift         ← 설정 UI (Shortcuts, Layouts, Hidden Apps 탭)
@@ -236,6 +254,7 @@ Subscribers
 | `SpaceEngine` | 디스플레이별 `DockSnapshot` 소유, refresh scheduling, stale drop |
 | `StateWriter` | `state.json` debounce 기록 (주 디스플레이) |
 | `SpacePanelController` | 디스플레이별 패널 생성/제거/리사이즈, snapshot 기반 UI 갱신 |
+| `SpaceSwitcher` | CGEvent dock-swipe 합성으로 Space 전환, Ctrl+N 폴백 |
 | `SpaceBarView` | Space 라벨/앱 아이콘 렌더링, 스와이프, 앱 활성화 |
 | `MenuBarController` | 메뉴바 아이콘 + 전체 설정 메뉴 |
 | `WindowShortcutController` | 윈도우 스냅 전역 단축키 관리 |
@@ -328,6 +347,10 @@ SpaceWidget은 macOS의 공개되지 않은 API를 사용합니다:
 - `CGSManagedDisplayGetCurrentSpace()` — 디스플레이별 현재 Space 조회
 - `CGSSpaceGetType()` — Space 타입 판별 (desktop/fullscreen/system/tiled)
 - `CGSCopySpacesForWindows()` — 윈도우가 속한 Space 조회
+- `CGSCopyActiveMenuBarDisplayIdentifier()` — 활성 메뉴바 디스플레이 식별
+
+**CGEvent Gesture Synthesis:**
+- dock-swipe 합성 이벤트로 Space 전환 (CGEventField 55, 110, 119, 123, 124, 129, 130, 132, 135, 139)
 
 **CoreDock:**
 - `CoreDockGetAutoHideEnabled` / `CoreDockSetAutoHideEnabled` — Dock 자동 숨김 제어

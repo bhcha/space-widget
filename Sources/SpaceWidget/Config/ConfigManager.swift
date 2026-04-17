@@ -232,16 +232,21 @@ final class ConfigManager: ObservableObject {
         // current display, prefer the dead display's label by ordinal. This handles
         // unplugging a primary monitor: the secondary (now sole) display should show
         // the primary's workspace labels instead of its own minimal set.
-        // Checked BEFORE Tier 1 because the current display may have its own label
-        // (e.g. "0" from the extension) that would otherwise take priority.
+        // Skip if the current display already has a label for this specific spaceID
+        // (user edited it after disconnecting — that edit takes priority).
         if liveDisplayIDs.count <= 1 {
-            let ownLabelCount = spaceLabelEntries.filter { candidates.contains($0.displayID) && !$0.label.isEmpty }.count
-            let deadEntries = spaceLabelEntries.filter { !liveDisplayIDs.contains($0.displayID) && $0.displayID != "__main__" }
-            let deadByDisplay = Dictionary(grouping: deadEntries.filter { !$0.label.isEmpty }, by: { $0.displayID })
-            if let (_, entries) = deadByDisplay.max(by: { $0.value.count < $1.value.count }),
-               entries.count > ownLabelCount,
-               let entry = entries.first(where: { $0.ordinal == ordinal }) {
-                return entry.label
+            let hasOwnLabelForSpace = spaceID != 0 && spaceLabelEntries.contains(where: {
+                candidates.contains($0.displayID) && $0.spaceID == spaceID && !$0.label.isEmpty
+            })
+            if !hasOwnLabelForSpace {
+                let ownLabelCount = spaceLabelEntries.filter { candidates.contains($0.displayID) && !$0.label.isEmpty }.count
+                let deadEntries = spaceLabelEntries.filter { !liveDisplayIDs.contains($0.displayID) && $0.displayID != "__main__" }
+                let deadByDisplay = Dictionary(grouping: deadEntries.filter { !$0.label.isEmpty }, by: { $0.displayID })
+                if let (_, entries) = deadByDisplay.max(by: { $0.value.count < $1.value.count }),
+                   entries.count > ownLabelCount,
+                   let entry = entries.first(where: { $0.ordinal == ordinal }) {
+                    return entry.label
+                }
             }
         }
 

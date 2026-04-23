@@ -28,6 +28,14 @@ func CGSCopySpacesForWindows(_ cid: UInt32, _ mask: Int32, _ windowIDs: CFArray)
 @_silgen_name("_AXUIElementGetWindow")
 func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: UnsafeMutablePointer<CGWindowID>) -> AXError
 
+/// Electron apps (e.g., Claude, Obsidian, VSCode) and some other apps require
+/// `AXManualAccessibility` to be explicitly enabled before they expose their
+/// windows via the Accessibility API. Harmless for apps that don't need it.
+/// Called before any AX query that needs to see app windows.
+func ensureAXEnabled(_ appElement: AXUIElement) {
+    AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+}
+
 /// Resolve the current space ID on the main display, using UUID-based lookup with "Main" fallback.
 func CGSCurrentSpaceID() -> UInt64 {
     let cid = CGSMainConnectionID()
@@ -50,6 +58,7 @@ func forEachWindowOnCurrentSpace(
     body: (_ appElement: AXUIElement, _ axWindow: AXUIElement, _ wid: CGWindowID) -> Bool
 ) {
     let appElement = AXUIElementCreateApplication(pid)
+    ensureAXEnabled(appElement)
     var windowsRef: CFTypeRef?
     guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
           let axWindows = windowsRef as? [AXUIElement] else { return }
@@ -91,6 +100,7 @@ func forEachWindowOnSpace(
     body: (_ appElement: AXUIElement, _ axWindow: AXUIElement, _ wid: CGWindowID) -> Bool
 ) {
     let appElement = AXUIElementCreateApplication(pid)
+    ensureAXEnabled(appElement)
     var windowsRef: CFTypeRef?
     guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
           let axWindows = windowsRef as? [AXUIElement] else { return }

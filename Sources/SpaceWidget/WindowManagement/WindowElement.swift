@@ -12,6 +12,7 @@ final class WindowElement {
     static func getFrontWindow() -> WindowElement? {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        ensureAXEnabled(appElement)
         var windowRef: CFTypeRef?
         // Try focused window first
         if AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &windowRef) == .success {

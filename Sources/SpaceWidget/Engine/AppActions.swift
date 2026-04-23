@@ -71,6 +71,7 @@ enum AppActions {
 
     static func restoreAndActivate(pid: pid_t, spaceID: UInt64? = nil) {
         let appElement = AXUIElementCreateApplication(pid)
+        ensureAXEnabled(appElement)
 
         // Unhide if the app is hidden
         AXUIElementSetAttributeValue(appElement, kAXHiddenAttribute as CFString, kCFBooleanFalse)
@@ -104,6 +105,7 @@ enum AppActions {
         handler: (_ menuItem: AXUIElement, _ menuBarItem: AXUIElement) -> Bool?
     ) -> Bool {
         let appElement = AXUIElementCreateApplication(pid)
+        ensureAXEnabled(appElement)
 
         var menuBarRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appElement, kAXMenuBarAttribute as CFString, &menuBarRef) == .success,

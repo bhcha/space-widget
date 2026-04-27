@@ -292,7 +292,7 @@ final class ConfigManager: ObservableObject {
         // creating a new entry on the current display. This preserves user edits when
         // the original display reconnects.
         let idxByDeadDisplay: Int? = {
-            guard idxBySpaceID == nil && idxByOrdinal == nil,
+            guard idxBySpaceID == nil,
                   liveDisplayIDs.count == 1 else { return nil }
             let candidates: Set<String> = displayID == mainDisplayID ? [displayID, "__main__"] : [displayID]
             let ownLabelCount = updated.filter { candidates.contains($0.displayID) && !$0.label.isEmpty }.count
@@ -305,8 +305,9 @@ final class ConfigManager: ObservableObject {
             return updated.firstIndex(where: { $0.displayID == deadDisplayID && $0.ordinal == ordinal })
         }()
 
-        // Prefer spaceID match, then real-displayID ordinal, then dead-display write-back, then sentinel
-        let idx: Int? = idxBySpaceID ?? idxByOrdinal ?? idxByDeadDisplay ?? idxBySentinel
+        // Prefer spaceID match, then dead-display write-back (so edits to a fallback-rendered label
+        // update the original display's entry), then same-display ordinal, then sentinel
+        let idx: Int? = idxBySpaceID ?? idxByDeadDisplay ?? idxByOrdinal ?? idxBySentinel
 
         if trimmed.isEmpty {
             if let idx = idx {

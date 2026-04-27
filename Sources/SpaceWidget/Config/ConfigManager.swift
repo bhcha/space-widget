@@ -242,7 +242,9 @@ final class ConfigManager: ObservableObject {
                 let ownLabelCount = spaceLabelEntries.filter { candidates.contains($0.displayID) && !$0.label.isEmpty }.count
                 let deadEntries = spaceLabelEntries.filter { !liveDisplayIDs.contains($0.displayID) && $0.displayID != "__main__" }
                 let deadByDisplay = Dictionary(grouping: deadEntries.filter { !$0.label.isEmpty }, by: { $0.displayID })
-                if let (_, entries) = deadByDisplay.max(by: { $0.value.count < $1.value.count }),
+                if let (_, entries) = deadByDisplay.max(by: {
+                       $0.value.count != $1.value.count ? $0.value.count < $1.value.count : $0.key > $1.key
+                   }),
                    entries.count > ownLabelCount,
                    let entry = entries.first(where: { $0.ordinal == ordinal }) {
                     return entry.label
@@ -285,23 +287,53 @@ final class ConfigManager: ObservableObject {
             updated.firstIndex { $0.displayID == sid && $0.ordinal == ordinal }
         }
 
-        // Prefer spaceID match, then real-displayID ordinal, then sentinel
-        let idx: Int? = idxBySpaceID ?? idxByOrdinal ?? idxBySentinel
+        // Tier 0 write-back: in single-display mode, if the user is editing a label that
+        // was shown via dead-display fallback, update the dead-display entry instead of
+        // creating a new entry on the current display. This preserves user edits when
+        // the original display reconnects.
+        let idxByDeadDisplay: Int? = {
+            guard idxBySpaceID == nil && idxByOrdinal == nil,
+                  liveDisplayIDs.count == 1 else { return nil }
+            let candidates: Set<String> = displayID == mainDisplayID ? [displayID, "__main__"] : [displayID]
+            let ownLabelCount = updated.filter { candidates.contains($0.displayID) && !$0.label.isEmpty }.count
+            let deadEntries = updated.filter { !liveDisplayIDs.contains($0.displayID) && $0.displayID != "__main__" && !$0.label.isEmpty }
+            let deadByDisplay = Dictionary(grouping: deadEntries, by: { $0.displayID })
+            guard let (deadDisplayID, entries) = deadByDisplay.max(by: {
+                      $0.value.count != $1.value.count ? $0.value.count < $1.value.count : $0.key > $1.key
+                  }),
+                  entries.count > ownLabelCount else { return nil }
+            return updated.firstIndex(where: { $0.displayID == deadDisplayID && $0.ordinal == ordinal })
+        }()
+
+        // Prefer spaceID match, then real-displayID ordinal, then dead-display write-back, then sentinel
+        let idx: Int? = idxBySpaceID ?? idxByOrdinal ?? idxByDeadDisplay ?? idxBySentinel
 
         if trimmed.isEmpty {
-            if let idx = idx { updated.remove(at: idx) }
+            if let idx = idx {
+                if idx == idxByDeadDisplay {
+                    // Tier 0 write-back: blank the label but keep the dead display's
+                    // displayID/spaceID so its entry structure survives reconnection.
+                    updated[idx].label = ""
+                } else {
+                    updated.remove(at: idx)
+                }
+            }
         } else {
-            let entry = SpaceLabelEntry(spaceID: spaceID, displayID: displayID, ordinal: ordinal, label: trimmed)
             if let idx = idx {
                 // If this was a sentinel entry, remove it and append the real entry so the sentinel is gone
                 if updated[idx].displayID == "__main__" {
                     updated.remove(at: idx)
-                    updated.append(entry)
+                    updated.append(SpaceLabelEntry(spaceID: spaceID, displayID: displayID, ordinal: ordinal, label: trimmed))
+                } else if idx == idxByDeadDisplay {
+                    // Tier 0 write-back: keep dead-display's displayID and spaceID,
+                    // only update the label and ordinal
+                    updated[idx].label = trimmed
+                    updated[idx].ordinal = ordinal
                 } else {
-                    updated[idx] = entry
+                    updated[idx] = SpaceLabelEntry(spaceID: spaceID, displayID: displayID, ordinal: ordinal, label: trimmed)
                 }
             } else {
-                updated.append(entry)
+                updated.append(SpaceLabelEntry(spaceID: spaceID, displayID: displayID, ordinal: ordinal, label: trimmed))
             }
         }
         applySpaceLabelEntries(updated)
@@ -359,11 +391,25 @@ final class ConfigManager: ObservableObject {
                     continue
                 }
 
-                // Step 2: rebind same-display ordinal-match entry whose spaceID is 0 or dead
+                // Step 2: rebind sentinel entries (spaceID == 0) or same-display dead spaceID entries.
+                // Skip dead spaceID rebind only when dead-display fallback in labelFor() would
+                // actually show the migrated entry's label (its display has more labels than this one).
+                // Otherwise neither path would render a label and the slot would regress to Untitled.
+                let claimingDeadDisplayID: String? = updated.first(where: {
+                    $0.displayID != displayID && $0.displayID != "__main__"
+                        && $0.spaceID == live.spaceID && !$0.label.isEmpty
+                })?.displayID
+                let migratedFromOtherDisplay: Bool = {
+                    guard let claimingID = claimingDeadDisplayID else { return false }
+                    let claimingCount = updated.filter { $0.displayID == claimingID && !$0.label.isEmpty }.count
+                    let candidates: Set<String> = isMain ? [displayID, "__main__"] : [displayID]
+                    let ownLabelCount = updated.filter { candidates.contains($0.displayID) && !$0.label.isEmpty }.count
+                    return claimingCount > ownLabelCount
+                }()
                 if let idx = updated.firstIndex(where: {
                     entryBelongsToDisplay($0)
                         && $0.ordinal == live.ordinal
-                        && ($0.spaceID == 0 || !liveSpaceIDs.contains($0.spaceID))
+                        && ($0.spaceID == 0 || (!migratedFromOtherDisplay && !liveSpaceIDs.contains($0.spaceID)))
                 }) {
                     updated[idx].spaceID = live.spaceID
                     if updated[idx].displayID != displayID {

@@ -478,7 +478,7 @@ final class SpacePanelController {
 
     private func makeSpaceBarView(from snapshot: DockSnapshot, displayID: String, pageState: SpaceBarPageState, iconsPerPage: Int) -> SpaceBarView {
         SpaceBarView(
-            spaceNumber: displayID == spaceEngine.spaceMonitor.mainDisplayIdentifier ? "\(snapshot.spaceNumber)" : "-",
+            spaceNumber: "\(snapshot.spaceNumber)",
             spaceLabel: snapshot.spaceLabel,
             items: snapshot.items,
             totalItemCount: snapshot.items.count,

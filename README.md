@@ -39,11 +39,17 @@ SpaceWidget은 이 지점을 보완합니다.
 
 - 연결된 디스플레이마다 독립 패널 자동 생성
 - 미러링: 주 디스플레이와 동일하게 동작
-- 확장 디스플레이: 별도 Space로 인식, 독립 라벨 관리
-- 확장 디스플레이 Space 번호는 `-`로 표시
+- 확장 디스플레이: 별도 Space로 인식, per-display ordinal로 Space 번호 표시, 독립 라벨 관리
 - 디스플레이 연결/분리 시 패널 자동 추가/제거
+
+### Label Persistence
+
 - 라벨은 안정적인 spaceID에 고정 (Space 순서 변경/풀스크린 전환 시에도 라벨 유지)
 - Space 순서 변경 시 ordinal 자동 재바인딩
+- v1 마이그레이션: `__main__` sentinel entry로 ordinal 기반 구 라벨 보존
+- Dead-display fallback (Tier 0): 주 디스플레이가 분리되어 단일-디스플레이 모드가 되면, 남은 디스플레이에 연결이 끊긴 디스플레이의 라벨을 ordinal 기반으로 shadow 표시
+- Tier 0 write-back: shadow 상태에서 편집 시 원본(분리된) 디스플레이의 entry를 갱신해 재연결 시 편집 내용 복원
+- 선택 안정성: tiebreaker로 dead-display 선택을 결정적으로 처리해 중복 덮어쓰기 방지
 
 ### Running App Snapshot
 
@@ -169,25 +175,33 @@ macOS Dock 동작 제어 (CoreDock private framework 사용):
 space-widget/
 ├── Sources/SpaceWidget/
 │   ├── App/
-│   │   ├── SpaceWidgetApp.swift          ← 앱 진입점, 의존성 조립
-│   │   └── MenuBarController.swift       ← 메뉴바 아이콘 + 설정 메뉴
+│   │   ├── SpaceWidgetApp.swift              ← 앱 진입점, 의존성 조립
+│   │   ├── MenuBarController.swift           ← 메뉴바 아이콘 + 설정 메뉴
+│   │   ├── PreferencesWindowController.swift ← 설정 창 라이프사이클
+│   │   └── DockController.swift              ← macOS Dock 동작 제어 (CoreDock)
 │   ├── Config/
 │   │   ├── ConfigManager.swift           ← 설정 로드/저장 (labels, ignored apps, shortcuts 등)
 │   │   ├── Logger.swift                  ← 파일 + stderr 로그
 │   │   ├── Migrator.swift                ← sketchybar → space-dock 마이그레이션
-│   │   └── StateWriter.swift             ← state.json 기록
+│   │   ├── StateWriter.swift             ← state.json 기록
+│   │   ├── OverlapDetection.swift        ← Dock-위젯 겹침 감지/아이콘 수 축소 계산
+│   │   └── ShortcutBinding.swift         ← 단축키 바인딩 모델
 │   ├── Engine/
 │   │   ├── SpaceMonitor.swift            ← 전체 디스플레이 Space 감지
 │   │   ├── WindowListProvider.swift      ← 앱 목록 수집 (화면별 필터링)
 │   │   ├── SpaceEngine.swift             ← 멀티 디스플레이 snapshot 파이프라인
 │   │   ├── CGSPrivate.swift              ← CGS private API bridge
 │   │   ├── AppActions.swift              ← 앱 액션 (new window, close, activate)
-│   │   └── SpaceSwitcher.swift          ← CGEvent dock-swipe 기반 Space 전환
+│   │   ├── SpaceSwitcher.swift           ← CGEvent dock-swipe 기반 Space 전환
+│   │   ├── CoreDockBridge.swift          ← CoreDock private API bridge
+│   │   ├── DockGeometry.swift            ← Dock 위치/크기 계산
+│   │   └── WindowMoveObserver.swift      ← 윈도우 이동/리사이즈 감지
 │   ├── Panel/
 │   │   ├── SpacePanel.swift              ← 투명 NSPanel (스크린 캡처 제외)
 │   │   ├── SpacePanelController.swift    ← 멀티 패널 생성/업데이트/제거
 │   │   ├── BalloonMenuPanel.swift        ← 우클릭 말풍선 메뉴
-│   │   └── DesktopListMenuContent.swift ← 데스크탑 리스트 팝업 UI
+│   │   ├── DesktopListMenuContent.swift  ← 데스크탑 리스트 팝업 UI
+│   │   └── AutoHideManager.swift         ← 바 자동 숨김 상태 관리
 │   ├── Views/
 │   │   ├── SpaceBarView.swift            ← SwiftUI 바 UI
 │   │   ├── PreferencesView.swift         ← 설정 UI (Shortcuts, Layouts, Hidden Apps 탭)
@@ -197,17 +211,16 @@ space-widget/
 │   ├── Models/
 │   │   ├── ActiveSpace.swift
 │   │   ├── DockItem.swift
-│   │   ├── DockSnapshot.swift
-│   │   ├── LayoutTemplate.swift
-│   │   ├── ShortcutBinding.swift
-│   │   └── WindowAction.swift
+│   │   └── DockSnapshot.swift
 │   ├── WindowManagement/
 │   │   ├── WindowShortcutController.swift ← 윈도우 스냅 단축키 관리
 │   │   ├── WindowSnapManager.swift        ← AX API 기반 윈도우 조작
 │   │   ├── WindowElement.swift            ← AX 윈도우 래퍼
 │   │   ├── WindowCalculation.swift        ← 좌표 계산 (AX ↔ Cocoa)
+│   │   ├── WindowAction.swift             ← 윈도우 배치 액션 정의
 │   │   ├── ScreenGeometry.swift           ← 화면 지오메트리 유틸
 │   │   ├── LayoutApplier.swift            ← 레이아웃 템플릿 적용
+│   │   ├── LayoutTemplate.swift           ← 레이아웃 템플릿 모델
 │   │   ├── LayoutTemplateStore.swift      ← 템플릿 저장소
 │   │   ├── SpaceLayoutBridge.swift        ← Space 전환 → 레이아웃 자동 적용
 │   │   └── HotKeyManager.swift            ← 전역 단축키 등록 (Carbon)
@@ -262,6 +275,8 @@ Subscribers
 | `SpaceLayoutBridge` | Space 전환 시 레이아웃 자동 적용 |
 | `AutoHideManager` | 바 자동 숨김 상태 관리 |
 | `DockController` | macOS Dock 동작 제어 (CoreDock) |
+| `OverlapDetection` | Dock-위젯 겹침 감지 및 아이콘 수 축소 계산 |
+| `WindowMoveObserver` | 윈도우 이동/리사이즈 감지 |
 
 ## Quick Start
 

@@ -58,25 +58,26 @@ final class SpaceMonitor: ObservableObject {
     }
 
     /// Full per-display list of type-0 (desktop) spaces with their computed ordinals.
-    /// Returns dict: displayID -> [(spaceID, ordinal)] in ordinal order.
-    func resolveAllSpaceLists() -> [String: [(spaceID: UInt64, ordinal: Int)]] {
+    /// Returns dict: displayID -> [(spaceID, ordinal, uuid)] in ordinal order.
+    func resolveAllSpaceLists() -> [String: [(spaceID: UInt64, ordinal: Int, uuid: String?)]] {
         let cid = CGSMainConnectionID()
         let displays = CGSCopyManagedDisplaySpaces(cid) as [AnyObject]
 
-        var result: [String: [(spaceID: UInt64, ordinal: Int)]] = [:]
+        var result: [String: [(spaceID: UInt64, ordinal: Int, uuid: String?)]] = [:]
         for display in displays {
             guard let displayDict = display as? [String: AnyObject],
                   let spaces = displayDict["Spaces"] as? [[String: AnyObject]],
                   let displayIdentifier = displayDict["Display Identifier"] as? String
             else { continue }
 
-            var list: [(spaceID: UInt64, ordinal: Int)] = []
+            var list: [(spaceID: UInt64, ordinal: Int, uuid: String?)] = []
             var counter = 1
             for space in spaces {
                 guard let sid = (space["ManagedSpaceID"] as? UInt64) ?? (space["id64"] as? UInt64) else { continue }
                 let listedType = (space["type"] as? NSNumber)?.intValue ?? 0
                 if listedType == 0 {
-                    list.append((spaceID: sid, ordinal: counter))
+                    let uuid = (space["uuid"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                    list.append((spaceID: sid, ordinal: counter, uuid: uuid))
                     counter += 1
                 }
             }
@@ -110,6 +111,7 @@ final class SpaceMonitor: ObservableObject {
             var ordinal = 1
             var counter = 1
             var isListed = false
+            var spaceUUID: String? = nil
 
             for space in spaces {
                 guard let sid = (space["ManagedSpaceID"] as? UInt64) ?? (space["id64"] as? UInt64) else { continue }
@@ -118,6 +120,7 @@ final class SpaceMonitor: ObservableObject {
                     if sid == spaceID {
                         ordinal = counter
                         isListed = true
+                        spaceUUID = (space["uuid"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                     }
                     counter += 1
                 }
@@ -128,8 +131,8 @@ final class SpaceMonitor: ObservableObject {
                 continue
             }
 
-            swLog("SPACE", "metadata id=\(spaceID) ordinal=\(ordinal) display=\(displayIdentifier)")
-            result[displayIdentifier] = ActiveSpace(id: spaceID, ordinal: ordinal)
+            swLog("SPACE", "metadata id=\(spaceID) ordinal=\(ordinal) display=\(displayIdentifier) uuid=\(spaceUUID ?? "nil")")
+            result[displayIdentifier] = ActiveSpace(id: spaceID, ordinal: ordinal, uuid: spaceUUID)
         }
 
         return result

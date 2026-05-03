@@ -77,6 +77,7 @@ final class SpaceEngine: ObservableObject {
                         displayID: displayID,
                         spaceID: activeSpace.id,
                         ordinal: activeSpace.ordinal,
+                        uuid: activeSpace.uuid,
                         mainDisplayID: self.spaceMonitor.mainDisplayIdentifier
                     ) ?? "Untitled"
                     swLog("SPACE", "detected display=\(displayID) ordinal=\(activeSpace.ordinal) id=\(activeSpace.id) label=\(label)")
@@ -255,6 +256,7 @@ final class SpaceEngine: ObservableObject {
                 displayID: displayID,
                 spaceID: activeSpace.id,
                 ordinal: activeSpace.ordinal,
+                uuid: activeSpace.uuid,
                 mainDisplayID: mainDisplayID
             ) ?? "Untitled"
         }

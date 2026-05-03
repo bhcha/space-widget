@@ -9,12 +9,31 @@ struct SpaceLabelEntry: Codable, Equatable {
     var displayID: String
     var ordinal: Int
     var label: String
+    var uuid: String?
 
     enum CodingKeys: String, CodingKey {
         case spaceID = "space_id"
         case displayID = "display_id"
         case ordinal
         case label
+        case uuid
+    }
+
+    init(spaceID: UInt64, displayID: String, ordinal: Int, label: String, uuid: String? = nil) {
+        self.spaceID = spaceID
+        self.displayID = displayID
+        self.ordinal = ordinal
+        self.label = label
+        self.uuid = uuid
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        spaceID = try container.decode(UInt64.self, forKey: .spaceID)
+        displayID = try container.decode(String.self, forKey: .displayID)
+        ordinal = try container.decode(Int.self, forKey: .ordinal)
+        label = try container.decode(String.self, forKey: .label)
+        uuid = try container.decodeIfPresent(String.self, forKey: .uuid)
     }
 }
 
@@ -214,7 +233,7 @@ final class ConfigManager: ObservableObject {
         // Queue async file write
         queue.async { [weak self] in
             guard let self = self else { return }
-            let file = SpaceLabelsFile(version: 2, entries: entries)
+            let file = SpaceLabelsFile(version: 3, entries: entries)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             guard let data = try? encoder.encode(file) else { return }
@@ -222,41 +241,71 @@ final class ConfigManager: ObservableObject {
         }
     }
 
-    /// Look up the label for a given display/space. Prefers spaceID match, falls back to ordinal match on the same display.
+    /// Look up the label for a given display/space. Prefers dead-display fallback, then UUID, then spaceID, then ordinal.
     /// Pass mainDisplayID so that migrated v1 entries stored under "__main__" sentinel are also resolved.
-    func labelFor(displayID: String, spaceID: UInt64, ordinal: Int, mainDisplayID: String) -> String? {
+    func labelFor(displayID: String, spaceID: UInt64, ordinal: Int, uuid: String?, mainDisplayID: String) -> String? {
         let candidates = [displayID, displayID == mainDisplayID ? "__main__" : nil].compactMap { $0 }
 
         // Tier 0: dead-display override (read-only, non-destructive).
         // In single-display mode, if a disconnected display had MORE labels than the
-        // current display, prefer the dead display's label by ordinal. This handles
-        // unplugging a primary monitor: the secondary (now sole) display should show
-        // the primary's workspace labels instead of its own minimal set.
-        // Skip if the current display already has a label for this specific spaceID
-        // (user edited it after disconnecting — that edit takes priority).
+        // current display, prefer the dead display's label. This handles unplugging a
+        // primary monitor: the secondary (now sole) display should show the primary's
+        // workspace labels instead of its own minimal set.
+        // Skip if the current display already has a label for this specific space
+        // (matched by uuid OR spaceID) — that explicit user label takes priority.
         if liveDisplayIDs.count <= 1 {
-            let hasOwnLabelForSpace = spaceID != 0 && spaceLabelEntries.contains(where: {
+            let hasOwnLabelByUUID = (uuid?.isEmpty == false) && spaceLabelEntries.contains(where: {
+                candidates.contains($0.displayID) && $0.uuid == uuid && !$0.label.isEmpty
+            })
+            let hasOwnLabelBySpaceID = spaceID != 0 && spaceLabelEntries.contains(where: {
                 candidates.contains($0.displayID) && $0.spaceID == spaceID && !$0.label.isEmpty
             })
+            let hasOwnLabelForSpace = hasOwnLabelByUUID || hasOwnLabelBySpaceID
             if !hasOwnLabelForSpace {
                 let ownLabelCount = spaceLabelEntries.filter { candidates.contains($0.displayID) && !$0.label.isEmpty }.count
                 let deadEntries = spaceLabelEntries.filter { !liveDisplayIDs.contains($0.displayID) && $0.displayID != "__main__" }
                 let deadByDisplay = Dictionary(grouping: deadEntries.filter { !$0.label.isEmpty }, by: { $0.displayID })
-                if let (_, entries) = deadByDisplay.max(by: {
+                if let (deadDisplay, entries) = deadByDisplay.max(by: {
                        $0.value.count != $1.value.count ? $0.value.count < $1.value.count : $0.key > $1.key
                    }),
-                   entries.count > ownLabelCount,
-                   let entry = entries.first(where: { $0.ordinal == ordinal }) {
-                    return entry.label
+                   entries.count > ownLabelCount {
+                    // Prefer UUID match (most stable identifier)
+                    if let uuid = uuid, !uuid.isEmpty,
+                       let entry = entries.first(where: { $0.uuid == uuid }) {
+                        swLog("LABEL", "tier0 fallback match=uuid display=\(displayID) sid=\(spaceID) ord=\(ordinal) uuid=\(uuid) -> dead=\(deadDisplay) label=\(entry.label)")
+                        return entry.label
+                    }
+                    // Then spaceID match (stable across display reconnect)
+                    if spaceID != 0,
+                       let entry = entries.first(where: { $0.spaceID == spaceID }) {
+                        swLog("LABEL", "tier0 fallback match=spaceID display=\(displayID) sid=\(spaceID) ord=\(ordinal) uuid=\(uuid ?? "nil") -> dead=\(deadDisplay) label=\(entry.label)")
+                        return entry.label
+                    }
+                    // Last: ordinal match (legacy fallback for entries with no other identifier)
+                    if let entry = entries.first(where: { $0.ordinal == ordinal }) {
+                        swLog("LABEL", "tier0 fallback match=ordinal display=\(displayID) sid=\(spaceID) ord=\(ordinal) uuid=\(uuid ?? "nil") -> dead=\(deadDisplay) label=\(entry.label) (drift: spaceID/uuid did not match any dead entry)")
+                        return entry.label
+                    }
                 }
             }
         }
 
-        // Tier 1: spaceID match on same display (session-stable)
+        // Tier 1: UUID match — globally unique, survives display/spaceID/ordinal changes
+        if let uuid = uuid, !uuid.isEmpty,
+           let entry = spaceLabelEntries.first(where: { $0.uuid == uuid && !$0.label.isEmpty }) {
+            // Log only when the matched entry is on a DIFFERENT display than queried
+            // (cross-display UUID resolution = drift indicator). Same-display matches are silent.
+            if entry.displayID != displayID && entry.displayID != "__main__" {
+                swLog("LABEL", "tier1 uuid xdisplay query=\(displayID) sid=\(spaceID) ord=\(ordinal) uuid=\(uuid) -> stored=\(entry.displayID) sid=\(entry.spaceID) ord=\(entry.ordinal) label=\(entry.label)")
+            }
+            return entry.label
+        }
+
+        // Tier 2: spaceID match on same display (session-stable)
         if spaceID != 0, let entry = spaceLabelEntries.first(where: { candidates.contains($0.displayID) && $0.spaceID == spaceID }) {
             return entry.label.isEmpty ? nil : entry.label
         }
-        // Tier 2: ordinal fallback on same display — only sentinel entries (spaceID == 0)
+        // Tier 3: ordinal fallback on same display — only sentinel entries (spaceID == 0)
         if let entry = spaceLabelEntries.first(where: { candidates.contains($0.displayID) && $0.ordinal == ordinal && $0.spaceID == 0 }) {
             return entry.label.isEmpty ? nil : entry.label
         }
@@ -264,10 +313,10 @@ final class ConfigManager: ObservableObject {
     }
 
     /// Update or insert a label for a specific space. Must be called on main.
-    func updateSpaceLabel(displayID: String, spaceID: UInt64, ordinal: Int, label: String, mainDisplayID: String) {
+    func updateSpaceLabel(displayID: String, spaceID: UInt64, ordinal: Int, label: String, uuid: String?, mainDisplayID: String) {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in
-                self?.updateSpaceLabel(displayID: displayID, spaceID: spaceID, ordinal: ordinal, label: label, mainDisplayID: mainDisplayID)
+                self?.updateSpaceLabel(displayID: displayID, spaceID: spaceID, ordinal: ordinal, label: label, uuid: uuid, mainDisplayID: mainDisplayID)
             }
             return
         }
@@ -277,8 +326,11 @@ final class ConfigManager: ObservableObject {
         // Resolve sentinel: a v1-migrated entry stored under "__main__" for the main display
         let sentinelDisplayID = displayID == mainDisplayID ? "__main__" : nil
 
-        // Find existing entry: first try (displayID, spaceID), then (displayID, ordinal),
-        // then sentinel (__main__, ordinal) for migrated v1 entries on the main display.
+        // Find existing entry by UUID (highest priority), then by spaceID, ordinal, and sentinel.
+        let idxByUUID: Int? = {
+            guard let uuid = uuid, !uuid.isEmpty else { return nil }
+            return updated.firstIndex { $0.uuid == uuid }
+        }()
         let idxBySpaceID: Int? = spaceID != 0
             ? updated.firstIndex { $0.displayID == displayID && $0.spaceID == spaceID }
             : nil
@@ -292,7 +344,8 @@ final class ConfigManager: ObservableObject {
         // creating a new entry on the current display. This preserves user edits when
         // the original display reconnects.
         let idxByDeadDisplay: Int? = {
-            guard idxBySpaceID == nil,
+            guard idxByUUID == nil,
+                  idxBySpaceID == nil,
                   liveDisplayIDs.count == 1 else { return nil }
             let candidates: Set<String> = displayID == mainDisplayID ? [displayID, "__main__"] : [displayID]
             let ownLabelCount = updated.filter { candidates.contains($0.displayID) && !$0.label.isEmpty }.count
@@ -302,12 +355,39 @@ final class ConfigManager: ObservableObject {
                       $0.value.count != $1.value.count ? $0.value.count < $1.value.count : $0.key > $1.key
                   }),
                   entries.count > ownLabelCount else { return nil }
+            // Match in the same priority as labelFor()'s Tier 0 read path:
+            // uuid > spaceID > ordinal. Otherwise an edit on a fallback-rendered label
+            // would be written to a different stored entry than the one shown.
+            if let uuid = uuid, !uuid.isEmpty,
+               let idx = updated.firstIndex(where: { $0.displayID == deadDisplayID && $0.uuid == uuid }) {
+                return idx
+            }
+            if spaceID != 0,
+               let idx = updated.firstIndex(where: { $0.displayID == deadDisplayID && $0.spaceID == spaceID }) {
+                return idx
+            }
             return updated.firstIndex(where: { $0.displayID == deadDisplayID && $0.ordinal == ordinal })
         }()
 
-        // Prefer spaceID match, then dead-display write-back (so edits to a fallback-rendered label
-        // update the original display's entry), then same-display ordinal, then sentinel
-        let idx: Int? = idxBySpaceID ?? idxByDeadDisplay ?? idxByOrdinal ?? idxBySentinel
+        // Prefer UUID match, then spaceID match, then dead-display write-back, then ordinal, then sentinel
+        let idx: Int? = idxByUUID ?? idxBySpaceID ?? idxByDeadDisplay ?? idxByOrdinal ?? idxBySentinel
+
+        // Diagnostic: surface which match strategy was selected and any cross-display retarget.
+        let strategy: String = {
+            if idx == nil { return trimmed.isEmpty ? "noop" : "insert" }
+            if idx == idxByUUID { return "uuid" }
+            if idx == idxBySpaceID { return "spaceID" }
+            if idx == idxByDeadDisplay { return "deadDisplay" }
+            if idx == idxByOrdinal { return "ordinal" }
+            if idx == idxBySentinel { return "sentinel" }
+            return "?"
+        }()
+        if let idx = idx {
+            let prior = updated[idx]
+            swLog("LABEL", "edit strategy=\(strategy) display=\(displayID) sid=\(spaceID) ord=\(ordinal) uuid=\(uuid ?? "nil") label='\(trimmed)' priorEntry=(display=\(prior.displayID) sid=\(prior.spaceID) ord=\(prior.ordinal) uuid=\(prior.uuid ?? "nil") label='\(prior.label)')")
+        } else {
+            swLog("LABEL", "edit strategy=\(strategy) display=\(displayID) sid=\(spaceID) ord=\(ordinal) uuid=\(uuid ?? "nil") label='\(trimmed)'")
+        }
 
         if trimmed.isEmpty {
             if let idx = idx {
@@ -324,17 +404,26 @@ final class ConfigManager: ObservableObject {
                 // If this was a sentinel entry, remove it and append the real entry so the sentinel is gone
                 if updated[idx].displayID == "__main__" {
                     updated.remove(at: idx)
-                    updated.append(SpaceLabelEntry(spaceID: spaceID, displayID: displayID, ordinal: ordinal, label: trimmed))
+                    updated.append(SpaceLabelEntry(spaceID: spaceID, displayID: displayID, ordinal: ordinal, label: trimmed, uuid: uuid))
                 } else if idx == idxByDeadDisplay {
                     // Tier 0 write-back: keep dead-display's displayID and spaceID,
-                    // only update the label and ordinal
+                    // only update the label and ordinal. Also set uuid if now available.
                     updated[idx].label = trimmed
                     updated[idx].ordinal = ordinal
+                    if let uuid = uuid, !uuid.isEmpty, updated[idx].uuid == nil {
+                        updated[idx].uuid = uuid
+                    }
                 } else {
-                    updated[idx] = SpaceLabelEntry(spaceID: spaceID, displayID: displayID, ordinal: ordinal, label: trimmed)
+                    // Update the entry, also stamping uuid if the entry currently lacks one
+                    var entry = SpaceLabelEntry(spaceID: spaceID, displayID: displayID, ordinal: ordinal, label: trimmed, uuid: uuid ?? updated[idx].uuid)
+                    // If a UUID was provided, always use it (even if entry had a different one)
+                    if let uuid = uuid, !uuid.isEmpty {
+                        entry = SpaceLabelEntry(spaceID: spaceID, displayID: displayID, ordinal: ordinal, label: trimmed, uuid: uuid)
+                    }
+                    updated[idx] = entry
                 }
             } else {
-                updated.append(SpaceLabelEntry(spaceID: spaceID, displayID: displayID, ordinal: ordinal, label: trimmed))
+                updated.append(SpaceLabelEntry(spaceID: spaceID, displayID: displayID, ordinal: ordinal, label: trimmed, uuid: uuid))
             }
         }
         applySpaceLabelEntries(updated)
@@ -350,7 +439,7 @@ final class ConfigManager: ObservableObject {
     /// This is the correct API when multiple displays need rebinding — avoids the race
     /// where looping per-display calls each reads a stale array.
     func rebindAllOrdinals(
-        displayLists: [String: [(spaceID: UInt64, ordinal: Int)]],
+        displayLists: [String: [(spaceID: UInt64, ordinal: Int, uuid: String?)]],
         mainDisplayID: String
     ) {
         guard Thread.isMainThread else {
@@ -377,17 +466,52 @@ final class ConfigManager: ObservableObject {
             }
 
             for live in liveSpaces {
+                // Step 0: UUID match — globally unique, takes precedence.
+                // Update displayID/spaceID/ordinal to live values when UUID matches an entry on ANY display.
+                if let liveUUID = live.uuid, !liveUUID.isEmpty,
+                   let idx = updated.firstIndex(where: { $0.uuid == liveUUID }) {
+                    var mutations: [String] = []
+                    if updated[idx].displayID != displayID {
+                        mutations.append("display:\(updated[idx].displayID)->\(displayID)")
+                        updated[idx].displayID = displayID; changed = true
+                    }
+                    if updated[idx].spaceID != live.spaceID {
+                        mutations.append("sid:\(updated[idx].spaceID)->\(live.spaceID)")
+                        updated[idx].spaceID = live.spaceID; changed = true
+                    }
+                    if updated[idx].ordinal != live.ordinal {
+                        mutations.append("ord:\(updated[idx].ordinal)->\(live.ordinal)")
+                        updated[idx].ordinal = live.ordinal; changed = true
+                    }
+                    if !mutations.isEmpty {
+                        swLog("LABEL", "rebind step0 uuid=\(liveUUID) label=\(updated[idx].label) \(mutations.joined(separator: " "))")
+                    }
+                    continue
+                }
+
                 // Step 1: entry already bound to this live spaceID on same display
                 if let idx = updated.firstIndex(where: {
                     entryBelongsToDisplay($0) && $0.spaceID == live.spaceID && $0.spaceID != 0
                 }) {
+                    var mutations: [String] = []
                     if updated[idx].ordinal != live.ordinal {
+                        mutations.append("ord:\(updated[idx].ordinal)->\(live.ordinal)")
                         updated[idx].ordinal = live.ordinal
                         changed = true
                     }
                     if updated[idx].displayID != displayID {
+                        mutations.append("display:\(updated[idx].displayID)->\(displayID)")
                         updated[idx].displayID = displayID
                         changed = true
+                    }
+                    // Stamp uuid on legacy entries (no UUID) the first time we see them
+                    if let liveUUID = live.uuid, !liveUUID.isEmpty, updated[idx].uuid == nil {
+                        mutations.append("uuid:nil->\(liveUUID)")
+                        updated[idx].uuid = liveUUID
+                        changed = true
+                    }
+                    if !mutations.isEmpty {
+                        swLog("LABEL", "rebind step1 sid=\(live.spaceID) label=\(updated[idx].label) \(mutations.joined(separator: " "))")
                     }
                     continue
                 }
@@ -412,11 +536,19 @@ final class ConfigManager: ObservableObject {
                         && $0.ordinal == live.ordinal
                         && ($0.spaceID == 0 || (!migratedFromOtherDisplay && !liveSpaceIDs.contains($0.spaceID)))
                 }) {
+                    let priorSID = updated[idx].spaceID
+                    let priorDisplay = updated[idx].displayID
+                    let priorUUID = updated[idx].uuid
                     updated[idx].spaceID = live.spaceID
                     if updated[idx].displayID != displayID {
                         updated[idx].displayID = displayID
                     }
+                    // Stamp uuid on legacy entries (no UUID) the first time we see them
+                    if let liveUUID = live.uuid, !liveUUID.isEmpty, updated[idx].uuid == nil {
+                        updated[idx].uuid = liveUUID
+                    }
                     changed = true
+                    swLog("LABEL", "rebind step2 ord=\(live.ordinal) label=\(updated[idx].label) sid:\(priorSID)->\(live.spaceID) display:\(priorDisplay)->\(displayID) uuid:\(priorUUID ?? "nil")->\(updated[idx].uuid ?? "nil")")
                 }
             }
         }

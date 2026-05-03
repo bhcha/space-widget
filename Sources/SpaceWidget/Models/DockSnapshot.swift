@@ -9,6 +9,7 @@ struct DockSnapshot: Equatable {
 
     var spaceNumber: Int { space.ordinal }
     var spaceID: UInt64 { space.id }
+    var spaceUUID: String? { space.uuid }
     var appBundleIDs: [String] { items.map(\.id) }
     var appNames: [String] { items.map(\.name) }
 

@@ -208,10 +208,12 @@ final class SpacePanelController {
         let items: [DesktopListItem] = spaceList.map { entry in
             let sid = entry.spaceID
             let ord = entry.ordinal
+            let entryUUID = entry.uuid
             let label = configManager.labelFor(
                 displayID: displayID,
                 spaceID: sid,
                 ordinal: ord,
+                uuid: entryUUID,
                 mainDisplayID: mainDisplayID
             ) ?? ""
             let isCurrent = (sid == currentSpaceID)
@@ -590,6 +592,7 @@ final class SpacePanelController {
             spaceID: snapshot.spaceID,
             ordinal: snapshot.spaceNumber,
             label: textField.stringValue,
+            uuid: snapshot.spaceUUID,
             mainDisplayID: spaceEngine.spaceMonitor.mainDisplayIdentifier
         )
     }

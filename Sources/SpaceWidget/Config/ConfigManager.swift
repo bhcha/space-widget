@@ -369,13 +369,25 @@ final class ConfigManager: ObservableObject {
             return updated.firstIndex(where: { $0.displayID == deadDisplayID && $0.ordinal == ordinal })
         }()
 
+        // True when idxByUUID resolves to an entry on a disconnected display in
+        // single-display mode. Such edits must use the dead-display write-back path
+        // (preserve displayID/spaceID) instead of the generic replacement branch,
+        // or the dead entry will be silently retargeted to the live display and
+        // the label won't survive reconnection.
+        let uuidPointsToDeadEntry: Bool = {
+            guard let idx = idxByUUID,
+                  liveDisplayIDs.count == 1 else { return false }
+            let entryDisplayID = updated[idx].displayID
+            return !liveDisplayIDs.contains(entryDisplayID) && entryDisplayID != "__main__"
+        }()
+
         // Prefer UUID match, then spaceID match, then dead-display write-back, then ordinal, then sentinel
         let idx: Int? = idxByUUID ?? idxBySpaceID ?? idxByDeadDisplay ?? idxByOrdinal ?? idxBySentinel
 
         // Diagnostic: surface which match strategy was selected and any cross-display retarget.
         let strategy: String = {
             if idx == nil { return trimmed.isEmpty ? "noop" : "insert" }
-            if idx == idxByUUID { return "uuid" }
+            if idx == idxByUUID { return uuidPointsToDeadEntry ? "uuid-dead" : "uuid" }
             if idx == idxBySpaceID { return "spaceID" }
             if idx == idxByDeadDisplay { return "deadDisplay" }
             if idx == idxByOrdinal { return "ordinal" }
@@ -391,7 +403,7 @@ final class ConfigManager: ObservableObject {
 
         if trimmed.isEmpty {
             if let idx = idx {
-                if idx == idxByDeadDisplay {
+                if idx == idxByDeadDisplay || (idx == idxByUUID && uuidPointsToDeadEntry) {
                     // Tier 0 write-back: blank the label but keep the dead display's
                     // displayID/spaceID so its entry structure survives reconnection.
                     updated[idx].label = ""
@@ -405,7 +417,7 @@ final class ConfigManager: ObservableObject {
                 if updated[idx].displayID == "__main__" {
                     updated.remove(at: idx)
                     updated.append(SpaceLabelEntry(spaceID: spaceID, displayID: displayID, ordinal: ordinal, label: trimmed, uuid: uuid))
-                } else if idx == idxByDeadDisplay {
+                } else if idx == idxByDeadDisplay || (idx == idxByUUID && uuidPointsToDeadEntry) {
                     // Tier 0 write-back: keep dead-display's displayID and spaceID,
                     // only update the label and ordinal. Also set uuid if now available.
                     updated[idx].label = trimmed

@@ -18,6 +18,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var spaceLayoutBridge: SpaceLayoutBridge?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // macOS 26.5+ aggressively terminates panel-only apps via AppKit's
+        // "No windows open yet" TAL path. NSPanel doesn't count as a window.
+        ProcessInfo.processInfo.disableAutomaticTermination("SpaceWidget runs as a persistent panel overlay")
+
         let configManager = ConfigManager()
 
         // Create SpaceMonitor first so it can be shared

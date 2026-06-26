@@ -565,6 +565,41 @@ final class ConfigManager: ObservableObject {
             }
         }
 
+        // Prune pass: drop entries for spaces that no longer exist.
+        // Safe-prune rule — remove an entry only when ALL hold:
+        //   1. its display is currently reported by CGS (present in displayLists), so we have an
+        //      authoritative live space list for it. Entries on disconnected displays are preserved
+        //      for dead-display fallback.
+        //   2. it is not the "__main__" sentinel.
+        //   3. it carries a UUID — the only identifier stable across reboot/reconnect/reorder. spaceID
+        //      alone is unsafe (it is reassigned on reboot, which would wrongly delete live labels).
+        //   4. that UUID appears in NO live space across all displays. Step 0 already migrated any entry
+        //      whose UUID is live onto its live display, so a surviving UUID mismatch means genuine removal.
+        //   5. its spaceID is not claimed by a live space whose UUID metadata is missing this refresh.
+        //      CGS occasionally returns a live desktop space with no uuid (resolveAllSpaceLists maps
+        //      missing/empty uuid -> nil); such a space is absent from allLiveUUIDs even though it is
+        //      alive. Without this guard, a transient UUID omission would permanently delete the label
+        //      of a still-live space. A reused spaceID whose live space DID report a (different) uuid is
+        //      not protected here, so the genuine-removal case is still pruned.
+        let liveDisplayKeys = Set(displayLists.keys)
+        let allLiveSpaces = displayLists.values.flatMap { $0 }
+        let allLiveUUIDs = Set(
+            allLiveSpaces.compactMap { $0.uuid.flatMap { $0.isEmpty ? nil : $0 } }
+        )
+        let liveSpaceIDsMissingUUID = Set(
+            allLiveSpaces.filter { ($0.uuid?.isEmpty ?? true) }.map { $0.spaceID }
+        )
+        updated.removeAll { entry in
+            guard liveDisplayKeys.contains(entry.displayID),
+                  entry.displayID != "__main__",
+                  let uuid = entry.uuid, !uuid.isEmpty,
+                  !allLiveUUIDs.contains(uuid),
+                  !liveSpaceIDsMissingUUID.contains(entry.spaceID) else { return false }
+            swLog("LABEL", "prune uuid=\(uuid) display=\(entry.displayID) sid=\(entry.spaceID) ord=\(entry.ordinal) label=\(entry.label) (space removed)")
+            changed = true
+            return true
+        }
+
         if changed {
             applySpaceLabelEntries(updated)
         }

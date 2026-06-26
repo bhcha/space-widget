@@ -31,6 +31,7 @@
 - `rebind step0 uuid=… …` — entry migrated by UUID across displays.
 - `rebind step1 sid=… …` — legacy entry on same display being stamped with UUID for the first time.
 - `rebind step2 ord=… …` — sentinel/dead spaceID rebind by ordinal (legacy path).
+- `prune uuid=… …` — entry removed because its space no longer exists in any live display's space list. Only fires for UUID-bearing entries on a currently-connected display; dead-display and `__main__` sentinel entries are never pruned.
 - `edit strategy=uuid|spaceID|deadDisplay|ordinal|sentinel|insert …` — which match strategy `updateSpaceLabel()` chose, with the prior entry state for diff.
 
 ## Label-resolution architecture
@@ -49,7 +50,7 @@ Identifier stability ranking (most → least):
 
 `updateSpaceLabel()` mirrors the same priority for symmetry; dead-display write-back preserves the dead `displayID`/`spaceID` so labels survive display reconnect.
 
-`rebindAllOrdinals()` runs on every space change. Step 0 migrates by UUID across displays; Steps 1–2 stamp UUIDs onto legacy v2 entries the first time they're seen.
+`rebindAllOrdinals()` runs on every space change. Step 0 migrates by UUID across displays; Steps 1–2 stamp UUIDs onto legacy v2 entries the first time they're seen. After the rebind steps, a prune pass removes UUID-bearing entries whose UUID is absent from every live space, gated to currently-connected displays so dead-display fallback and `__main__` sentinels are preserved; spaceID-only entries are never pruned because spaceIDs are reassigned on reboot.
 
 ## Building & running
 

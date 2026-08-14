@@ -52,8 +52,10 @@ enum AppActions {
         }
     }
 
-    static func activateApp(pid: pid_t, spaceID: UInt64? = nil) {
+    static func activateApp(pid: pid_t, spaceID: UInt64? = nil, displayID: String? = nil) {
+        var matchedAny = false
         let body: (_ appElement: AXUIElement, _ axWindow: AXUIElement, _ wid: CGWindowID) -> Bool = { appElement, axWindow, wid in
+            matchedAny = true
             let raiseResult = AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
             let frontResult = AXUIElementSetAttributeValue(appElement, kAXFrontmostAttribute as CFString, kCFBooleanTrue as CFTypeRef)
             if raiseResult == .success && frontResult == .success {
@@ -64,12 +66,18 @@ enum AppActions {
         }
         if let spaceID = spaceID {
             forEachWindowOnSpace(pid: pid, spaceID: spaceID, body: body)
+            // A snapshot can carry a stale spaceID right after a display reconfiguration
+            // (spaces migrate and the old ID dies). Don't let the click die silently.
+            if !matchedAny {
+                swLog("ACTIVATE", "no window on space \(spaceID) for pid=\(pid); falling back to current space of display=\(displayID ?? "main")")
+                fallbackToCurrentSpace(pid: pid, displayID: displayID, body: body)
+            }
         } else {
             forEachWindowOnCurrentSpace(pid: pid, body: body)
         }
     }
 
-    static func restoreAndActivate(pid: pid_t, spaceID: UInt64? = nil) {
+    static func restoreAndActivate(pid: pid_t, spaceID: UInt64? = nil, displayID: String? = nil) {
         let appElement = AXUIElementCreateApplication(pid)
         ensureAXEnabled(appElement)
 
@@ -77,7 +85,9 @@ enum AppActions {
         AXUIElementSetAttributeValue(appElement, kAXHiddenAttribute as CFString, kCFBooleanFalse)
 
         // Unminimize windows on the current space
+        var matchedAny = false
         let unminimizeBody: (_ appElement: AXUIElement, _ axWindow: AXUIElement, _ wid: CGWindowID) -> Bool = { _, axWindow, _ in
+            matchedAny = true
             var minRef: CFTypeRef?
             if AXUIElementCopyAttributeValue(axWindow, kAXMinimizedAttribute as CFString, &minRef) == .success,
                (minRef as? Bool) == true {
@@ -87,14 +97,36 @@ enum AppActions {
         }
         if let spaceID = spaceID {
             forEachWindowOnSpace(pid: pid, spaceID: spaceID, body: unminimizeBody)
+            // Same stale-spaceID guard as activateApp — see comment there.
+            if !matchedAny {
+                fallbackToCurrentSpace(pid: pid, displayID: displayID, body: unminimizeBody)
+            }
         } else {
             forEachWindowOnCurrentSpace(pid: pid, body: unminimizeBody)
         }
 
         // Small delay to let restore take effect before raising
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            activateApp(pid: pid, spaceID: spaceID)
+            activateApp(pid: pid, spaceID: spaceID, displayID: displayID)
         }
+    }
+
+    /// Stale-spaceID fallback: search the current space of the display the click came from.
+    /// forEachWindowOnCurrentSpace resolves via CGSCurrentSpaceID(), which only knows the main
+    /// display — the wrong space when the click originated on an external display's panel.
+    private static func fallbackToCurrentSpace(
+        pid: pid_t,
+        displayID: String?,
+        body: (_ appElement: AXUIElement, _ axWindow: AXUIElement, _ wid: CGWindowID) -> Bool
+    ) {
+        if let displayID = displayID {
+            let current = CGSManagedDisplayGetCurrentSpace(CGSMainConnectionID(), displayID as CFString)
+            if current != 0 {
+                forEachWindowOnSpace(pid: pid, spaceID: current, body: body)
+                return
+            }
+        }
+        forEachWindowOnCurrentSpace(pid: pid, body: body)
     }
 
     // MARK: - Private helpers

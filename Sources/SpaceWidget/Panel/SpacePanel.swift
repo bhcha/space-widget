@@ -18,6 +18,8 @@ final class SpacePanel: NSPanel {
 
         level = .floating
         sharingType = .none
+        // ARC owns the panel; letting AppKit release it on close() would over-release.
+        isReleasedWhenClosed = false
         backgroundColor = .clear
         hasShadow = false
         collectionBehavior = [.canJoinAllSpaces]
@@ -27,6 +29,13 @@ final class SpacePanel: NSPanel {
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown {
+            swLog("CLICKDIAG", "panel sendEvent leftMouseDown at=\(event.locationInWindow) win=\(windowNumber) onActiveSpace=\(isOnActiveSpace)")
+        }
+        super.sendEvent(event)
+    }
 
     override func rightMouseDown(with event: NSEvent) {
         swLog("PANEL", "rightMouseDown at=\(event.locationInWindow) screen=\(screen?.frame.debugDescription ?? "nil")")

@@ -57,6 +57,7 @@ struct SpaceBarView: View {
 
     @ObservedObject var pageState: SpaceBarPageState
     var spaceID: UInt64?
+    var displayID: String?
     @GestureState private var dragOffset: CGFloat = 0
 
 
@@ -108,13 +109,13 @@ struct SpaceBarView: View {
 
     /// Restore a hidden or minimized app and activate it on the current space.
     private func restoreAndActivateOnCurrentSpace(pid: pid_t) {
-        AppActions.restoreAndActivate(pid: pid, spaceID: spaceID)
+        AppActions.restoreAndActivate(pid: pid, spaceID: spaceID, displayID: displayID)
     }
 
     /// Activate a specific window on the current space via AXUIElement,
     /// avoiding NSRunningApplication.activate which can jump to another space.
     private func activateApp(pid: pid_t) {
-        AppActions.activateApp(pid: pid, spaceID: spaceID)
+        AppActions.activateApp(pid: pid, spaceID: spaceID, displayID: displayID)
     }
 
     private var interactiveBarContent: some View {

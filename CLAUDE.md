@@ -23,6 +23,7 @@
 | `[PANEL]` | Panel/screen lifecycle (display add/remove) |
 | `[LABEL]` | **Diagnostic** for label resolution drift — see below |
 | `[HOTKEY]` | Hotkey registration failures only |
+| `[CLICKDIAG]` | **Diagnostic** for panel click routing (post-HDMI-unplug fall-through). Fires at panel creation (+1s resample) and, via a global left-click monitor, on any click near a bar that the window server routed to another app — includes a CGWindowList z-order dump. Permanently enabled. |
 
 ### `[LABEL]` log subtypes
 

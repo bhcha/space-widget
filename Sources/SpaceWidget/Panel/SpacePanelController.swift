@@ -22,8 +22,15 @@ final class SpacePanelController {
     private var cancellables = Set<AnyCancellable>()
     private var screenObserver: NSObjectProtocol?
     private var hideWorkItem: DispatchWorkItem?
+    private var screenRebuildWorkItem: DispatchWorkItem?
+    private var displaySetChangedSinceRebuild = false
+    private var globalClickMonitor: Any?
 
     deinit {
+        screenRebuildWorkItem?.cancel()
+        if let globalClickMonitor = globalClickMonitor {
+            NSEvent.removeMonitor(globalClickMonitor)
+        }
         if let screenObserver = screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
         }
@@ -40,7 +47,68 @@ final class SpacePanelController {
             self?.observeEngine()
             self?.observeAutoHide()
             self?.observeLayoutInputs()
+            self?.installClickDiagnostics()
         }
+    }
+
+    // MARK: - Click Diagnostics
+    //
+    // After an HDMI unplug the bar is visible but clicks fall through until the user switches
+    // spaces — even on a freshly created panel. A global monitor only fires for events delivered
+    // to OTHER apps, so a click on the bar that triggers it proves the window server routed the
+    // click elsewhere; the CGWindowList dump shows who actually got it.
+
+    private func installClickDiagnostics() {
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in
+            self?.diagnoseGlobalClick(at: NSEvent.mouseLocation)
+        }
+        swLog("CLICKDIAG", "global click monitor installed=\(globalClickMonitor != nil)")
+    }
+
+    private func diagnoseGlobalClick(at cocoaPoint: NSPoint) {
+        for (displayID, context) in panelContexts {
+            let frame = context.panel.frame
+            // Only care about clicks in the bar strip at the bottom of a panel's screen
+            guard frame.contains(cocoaPoint),
+                  cocoaPoint.y - frame.minY <= SpaceBarConstants.bottomPadding + SpaceBarConstants.barHeight + 10 else { continue }
+            logPanelSpaces(context, reason: "missedClick")
+            dumpWindowStack(at: cocoaPoint, panel: context.panel, displayID: displayID)
+        }
+    }
+
+    /// Log the window-server z-order at a click point, front-to-back, down to our panel.
+    private func dumpWindowStack(at cocoaPoint: NSPoint, panel: SpacePanel, displayID: String) {
+        // CGWindowList uses top-left-origin global coordinates; Cocoa uses bottom-left.
+        let primaryHeight = CGDisplayBounds(CGMainDisplayID()).height
+        let cgPoint = CGPoint(x: cocoaPoint.x, y: primaryHeight - cocoaPoint.y)
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+            swLog("CLICKDIAG", "CGWindowListCopyWindowInfo returned nil")
+            return
+        }
+        var lines: [String] = []
+        var foundPanel = false
+        for info in list {  // already ordered front-to-back
+            guard let b = info[kCGWindowBounds as String] as? [String: CGFloat] else { continue }
+            let rect = CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0)
+            guard rect.contains(cgPoint) else { continue }
+            let owner = info[kCGWindowOwnerName as String] as? String ?? "?"
+            let layer = info[kCGWindowLayer as String] as? Int ?? 0
+            let num = info[kCGWindowNumber as String] as? Int ?? 0
+            let alpha = info[kCGWindowAlpha as String] as? Double ?? -1
+            lines.append("win=\(num) owner=\(owner) layer=\(layer) alpha=\(alpha) bounds=\(rect)")
+            if num == panel.windowNumber { foundPanel = true; break }
+        }
+        swLog("CLICKDIAG", "missed click display=\(displayID) cocoa=\(cocoaPoint) cg=\(cgPoint) panelWin=\(panel.windowNumber) panelInStack=\(foundPanel) stack(front→back):\n  " + lines.joined(separator: "\n  "))
+    }
+
+    /// Log which CGS spaces the panel window belongs to vs. the display's current space.
+    private func logPanelSpaces(_ context: PanelContext, reason: String) {
+        let cid = CGSMainConnectionID()
+        // CGSCopySpacesForWindows expects UInt32-tagged NSNumbers; an Int64-tagged box returns [].
+        let wid = CGWindowID(context.panel.windowNumber)
+        let spaces = CGSCopySpacesForWindows(cid, 0x7, [wid] as CFArray) as? [UInt64] ?? []
+        let current = CGSManagedDisplayGetCurrentSpace(cid, context.displayIdentifier as CFString)
+        swLog("CLICKDIAG", "\(reason) displayID=\(context.displayIdentifier) panelWin=\(wid) panelSpaces=\(spaces) currentSpace=\(current) onActiveSpace=\(context.panel.isOnActiveSpace) visible=\(context.panel.isVisible)")
     }
 
     private func setupPanels(retryCount: Int = 0) {
@@ -116,12 +184,21 @@ final class SpacePanelController {
         )
         context.currentEffectiveIconsPerPage = initialEffectiveIcons
         panelContexts[displayID] = context
+
+        logPanelSpaces(context, reason: "panelCreated")
+        // Space tagging can lag window creation; sample again after the window server settles.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self, let ctx = self.panelContexts[displayID], ctx.panel === context.panel else { return }
+            self.logPanelSpaces(ctx, reason: "panelCreated+1s")
+        }
     }
 
     private func removePanelContext(for displayID: String) {
         swLog("PANEL", "removePanelContext displayID=\(displayID)")
         guard let context = panelContexts[displayID] else { return }
-        context.panel.orderOut(nil)
+        // close() rather than orderOut() so the window leaves NSApp's window list — panels are
+        // rebuilt on every display reconfiguration and ordered-out ones would pile up.
+        context.panel.close()
         panelContexts.removeValue(forKey: displayID)
     }
 
@@ -433,7 +510,8 @@ final class SpacePanelController {
             self.configManager.updateLiveDisplays(currentDisplayIDs)
 
             // Remove contexts for disconnected displays
-            for displayID in existingDisplayIDs.subtracting(currentDisplayIDs) {
+            let removedDisplayIDs = existingDisplayIDs.subtracting(currentDisplayIDs)
+            for displayID in removedDisplayIDs {
                 self.removePanelContext(for: displayID)
             }
 
@@ -450,13 +528,61 @@ final class SpacePanelController {
                 }
             }
 
-            // Trigger space/snapshot refresh so new displays get their own snapshot
-            if hasNewDisplays {
+            // Trigger space/snapshot refresh on any display-set change. Removals matter as much
+            // as additions: when a display disconnects, its spaces migrate to a surviving display
+            // and that display's current space CHANGES (e.g. 508 → 3) — but macOS posts no
+            // activeSpaceDidChange for this. Without a refresh the snapshot keeps the dead
+            // spaceID, and icon clicks (activateApp filters windows by spaceID) silently no-op
+            // until the user manually switches spaces.
+            if hasNewDisplays || !removedDisplayIDs.isEmpty {
                 self.spaceEngine.spaceMonitor.refresh()
+                self.displaySetChangedSinceRebuild = true
             }
 
             self.recomputeAllEffectiveIconsPerPage()
+            self.scheduleStalePanelRebuild()
         }
+    }
+
+    /// Connecting or disconnecting a display re-parents every overlay window. A panel that
+    /// survives the change keeps drawing at its new frame, but the window server can keep routing
+    /// mouse events by the pre-change geometry — the bar is visible yet clicks fall through to
+    /// whatever is underneath, until a space switch re-registers the window. Rebuilding the panel
+    /// once the parameter burst settles hands the window server a brand-new window, the same path
+    /// a freshly connected display already takes.
+    private func scheduleStalePanelRebuild() {
+        screenRebuildWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.rebuildStalePanelContexts()
+        }
+        screenRebuildWorkItem = workItem
+        // didChangeScreenParameters arrives as a burst and the early notifications can still
+        // report pre-change frames, so wait for the burst to settle before rebuilding.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: workItem)
+    }
+
+    private func rebuildStalePanelContexts() {
+        screenRebuildWorkItem = nil
+        let displaySetChanged = displaySetChangedSinceRebuild
+        displaySetChangedSinceRebuild = false
+
+        for screen in NSScreen.screens {
+            guard let displayID = displayIdentifier(for: screen) else { continue }
+            guard let context = panelContexts[displayID] else { continue }
+            let panelFrame = context.panel.frame
+            guard displaySetChanged || panelFrame != screen.frame else { continue }
+            swLog("PANEL", "rebuild displayID=\(displayID) panelFrame=\(panelFrame) screenFrame=\(screen.frame) displaySetChanged=\(displaySetChanged)")
+            removePanelContext(for: displayID)
+            addPanelContext(for: screen, displayID: displayID)
+        }
+
+        // Re-read current spaces now that the reconfiguration has settled — the refresh fired
+        // during the parameter-change burst can still observe mid-migration values.
+        if displaySetChanged {
+            spaceEngine.spaceMonitor.refresh()
+        }
+
+        recomputeAllEffectiveIconsPerPage()
     }
 
     // MARK: - View Helpers
@@ -493,7 +619,8 @@ final class SpacePanelController {
             },
             iconsPerPage: iconsPerPage,
             pageState: pageState,
-            spaceID: snapshot.spaceID
+            spaceID: snapshot.spaceID,
+            displayID: displayID
         )
     }
 

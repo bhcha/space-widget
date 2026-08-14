@@ -3,6 +3,8 @@ import Combine
 
 final class SpaceMonitor: ObservableObject {
     @Published private(set) var displaySpaces: [String: ActiveSpace] = [:]
+    /// Displays whose current space is a non-desktop space (fullscreen app, tiled, system).
+    @Published private(set) var fullscreenDisplays: Set<String> = []
 
     var currentSpace: ActiveSpace {
         displaySpaces[mainDisplayIdentifier] ?? ActiveSpace(id: 0, ordinal: 1)
@@ -53,8 +55,8 @@ final class SpaceMonitor: ObservableObject {
         }
 
         swLog("EVENT", "space refresh begin immediate=\(immediate)")
-        let resolved = resolveAllSpaces()
-        commitSpaces(resolved)
+        let (resolved, fullscreen) = resolveAllSpaces()
+        commitSpaces(resolved, fullscreenDisplays: fullscreen)
     }
 
     /// Full per-display list of type-0 (desktop) spaces with their computed ordinals.
@@ -86,11 +88,12 @@ final class SpaceMonitor: ObservableObject {
         return result
     }
 
-    private func resolveAllSpaces() -> [String: ActiveSpace] {
+    private func resolveAllSpaces() -> (spaces: [String: ActiveSpace], fullscreenDisplays: Set<String>) {
         let cid = CGSMainConnectionID()
         let displays = CGSCopyManagedDisplaySpaces(cid) as [AnyObject]
 
         var result: [String: ActiveSpace] = [:]
+        var fullscreen: Set<String> = []
 
         for display in displays {
             guard let displayDict = display as? [String: AnyObject],
@@ -104,6 +107,7 @@ final class SpaceMonitor: ObservableObject {
 
             if spaceType != 0 {
                 swLog("SPACE", "skipping non-desktop current space id=\(spaceID) type=\(spaceType) display=\(displayIdentifier)")
+                fullscreen.insert(displayIdentifier)
                 continue
             }
 
@@ -135,13 +139,17 @@ final class SpaceMonitor: ObservableObject {
             result[displayIdentifier] = ActiveSpace(id: spaceID, ordinal: ordinal, uuid: spaceUUID)
         }
 
-        return result
+        return (result, fullscreen)
     }
 
-    private func commitSpaces(_ resolvedSpaces: [String: ActiveSpace]) {
+    private func commitSpaces(_ resolvedSpaces: [String: ActiveSpace], fullscreenDisplays newFullscreen: Set<String>) {
         for (displayID, space) in resolvedSpaces {
             swLog("EVENT", "space commit display=\(displayID) ordinal=\(space.ordinal) id=\(space.id)")
         }
         displaySpaces = resolvedSpaces
+        if fullscreenDisplays != newFullscreen {
+            swLog("SPACE", "fullscreen displays changed \(fullscreenDisplays.sorted()) -> \(newFullscreen.sorted())")
+            fullscreenDisplays = newFullscreen
+        }
     }
 }

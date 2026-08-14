@@ -15,6 +15,8 @@ final class SpacePanelController {
 
     private var panelContexts: [String: PanelContext] = [:]
     private var balloonPanel: BalloonMenuPanel?
+    private let fullscreenWindowMonitor = FullscreenWindowMonitor()
+    private var fullscreenHiddenDisplays: Set<String> = []
     private let spaceEngine: SpaceEngine
     private let autoHideManager: AutoHideManager
     private let configManager: ConfigManager
@@ -47,6 +49,7 @@ final class SpacePanelController {
             self?.observeEngine()
             self?.observeAutoHide()
             self?.observeLayoutInputs()
+            self?.observeFullscreenSpaces()
             self?.installClickDiagnostics()
         }
     }
@@ -167,7 +170,11 @@ final class SpacePanelController {
         container.addSubview(hotZoneView)
 
         panel.contentView = container
-        panel.orderFrontRegardless()
+        if fullscreenHiddenDisplays.contains(displayID) {
+            swLog("PANEL", "panel created hidden (fullscreen active) displayID=\(displayID)")
+        } else {
+            panel.orderFrontRegardless()
+        }
 
         swLog("PANEL", "panel created displayID=\(displayID) frame=\(panel.frame) isVisible=\(panel.isVisible) screen=\(panel.screen?.frame.debugDescription ?? "nil") level=\(panel.level.rawValue)")
 
@@ -450,6 +457,47 @@ final class SpacePanelController {
                 self?.recomputeAllEffectiveIconsPerPage()
             }
             .store(in: &cancellables)
+    }
+
+    // MARK: - Fullscreen Observer
+    //
+    // The panel joins all spaces (.canJoinAllSpaces), so it also floats over fullscreen
+    // content. Two signals decide hiding, per display:
+    //  - SpaceMonitor.fullscreenDisplays: native fullscreen Spaces (YouTube fullscreen,
+    //    green-button fullscreen) — event-driven via activeSpaceDidChange.
+    //  - FullscreenWindowMonitor.coveredDisplays: display-covering regular windows
+    //    (PowerPoint slideshow, non-native fullscreen players) — these never change
+    //    Space, so they are polled from the window list.
+
+    private func observeFullscreenSpaces() {
+        Publishers.CombineLatest(
+            spaceEngine.spaceMonitor.$fullscreenDisplays,
+            fullscreenWindowMonitor.$coveredDisplays
+        )
+        .map { $0.union($1) }
+        .removeDuplicates()
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] hiddenDisplays in
+            guard let self = self else { return }
+            self.fullscreenHiddenDisplays = hiddenDisplays
+            self.applyFullscreenState(hiddenDisplays)
+        }
+        .store(in: &cancellables)
+    }
+
+    private func applyFullscreenState(_ fullscreenDisplays: Set<String>) {
+        for (displayID, context) in panelContexts {
+            let shouldHide = fullscreenDisplays.contains(displayID)
+            if shouldHide && context.panel.isVisible {
+                swLog("PANEL", "hide panel: fullscreen space active displayID=\(displayID)")
+                balloonPanel?.dismiss()
+                balloonPanel = nil
+                context.panel.orderOut(nil)
+            } else if !shouldHide && !context.panel.isVisible {
+                swLog("PANEL", "reshow panel: desktop space restored displayID=\(displayID)")
+                context.panel.orderFrontRegardless()
+            }
+        }
     }
 
     // MARK: - Engine Observer

@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Combine
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -21,6 +22,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // macOS 26.5+ aggressively terminates panel-only apps via AppKit's
         // "No windows open yet" TAL path. NSPanel doesn't count as a window.
         ProcessInfo.processInfo.disableAutomaticTermination("SpaceWidget runs as a persistent panel overlay")
+
+        // Space switching (dock-swipe CGEvents), Ctrl+N fallback, and AX window actions
+        // all silently no-op without Accessibility trust. TCC attributes trust to the
+        // *responsible process* — the launcher .app bundle when launched via
+        // RunSpaceWidget.app, the terminal when run directly — so prompt here to get
+        // the actual responsible bundle registered in System Settings.
+        let axOptions = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        let axTrusted = AXIsProcessTrustedWithOptions(axOptions)
+        swLog("AX", "accessibility trusted=\(axTrusted)")
+
+        AgentNotificationModel.shared.start()
 
         let configManager = ConfigManager()
 
@@ -113,6 +125,11 @@ struct SpaceWidgetApp {
 
     static func main() {
         let args = CommandLine.arguments
+        // Durable hook helper exits before normal startup, AX prompts or configuration loading.
+        if args.dropFirst().first == "--spacewidget-hook" {
+            HookInstallationReceiver.run(arguments: args)
+            exit(0)
+        }
 
         // --version
         if args.contains("--version") {

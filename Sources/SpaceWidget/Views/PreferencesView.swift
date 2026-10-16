@@ -30,6 +30,9 @@ struct PreferencesView: View {
 
             overlapTab
                 .tabItem { Label("Overlap", systemImage: "rectangle.on.rectangle") }
+
+            AgentDetectionView()
+                .tabItem { Label("AI Agents", systemImage: "sparkles") }
         }
         .frame(minWidth: 580, minHeight: 660)
         .onAppear {

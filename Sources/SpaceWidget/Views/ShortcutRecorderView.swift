@@ -3,6 +3,7 @@ import AppKit
 
 struct ShortcutRecorderView: View {
     @Binding var binding: ShortcutBinding
+    var onRecordingChanged: (Bool) -> Void = { _ in }
     @State private var isRecording = false
     @State private var monitor: Any?
 
@@ -35,6 +36,7 @@ struct ShortcutRecorderView: View {
 
     private func startRecording() {
         isRecording = true
+        onRecordingChanged(true)
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             let keyCode = event.keyCode
 
@@ -66,6 +68,7 @@ struct ShortcutRecorderView: View {
 
     private func stopRecording() {
         isRecording = false
+        onRecordingChanged(false)
         if let monitor = monitor {
             NSEvent.removeMonitor(monitor)
             self.monitor = nil

@@ -391,13 +391,18 @@ make migrate              # 설정 마이그레이션
 make clean                # 클린
 ```
 
+## Planned features
+
+- [ ] **Space 전환 라벨** — Space를 이동할 때 현재 Space 이름을 잠시 표시한 뒤 자동으로 숨긴다. 표시 여부와 관련 옵션을 설정할 수 있게 한다.
+- [ ] **Claude·Codex 질문 팝업** — 에이전트가 사용자에게 묻는 질문을 팝업으로 표시하고, 팝업에 입력한 답을 원래 세션에 전달한다. **가능 여부 확인 필요:** CLI·데스크톱 앱별 공식 질문 수신 이벤트와 답변 전달 인터페이스를 먼저 조사한다. 현재 구현 범위에는 포함하지 않는다.
+
 ## Acknowledgements
 
 다음 오픈소스 프로젝트의 구현을 참고했습니다:
 
 | 프로젝트 | 참고 내용 |
 |---------|----------|
-| [WhichSpace](https://github.com/gechr/WhichSpace) | CGEvent dock-swipe 합성을 통한 Space 전환 기법. 비공개 CGEventField 인덱스와 gesture phase 시퀀스 참조 |
+| [WhichSpace](https://github.com/gechr/WhichSpace) | CGEvent dock-swipe 합성을 통한 Space 전환 기법. macOS 27 IOHID 페이로드·3단계 gesture 처리 포함. MIT 고지는 `Resources/WhichSpace-LICENSE.txt`에 포함 |
 | [yabai](https://github.com/koekeishiya/yabai) | CGS private API 사용 패턴 (`CGSCopyManagedDisplaySpaces`, `CGSSpaceGetType` 등) |
 | [Rectangle](https://github.com/rxhanson/Rectangle) | AX API 기반 윈도우 스냅 및 화면 영역 계산 로직 참조 |
 

@@ -283,7 +283,10 @@ enum SpaceSwitcher {
         swLog("SWITCH", "dockSwipe: current=\(current) target=\(target) steps=\(steps) goRight=\(goRight)")
 
         for i in 0..<steps {
-            postSwipeGesture(goRight: goRight)
+            guard postSwipeGesture(goRight: goRight, steps: steps) else {
+                swLog("SWITCH", "dockSwipe: could not construct gesture events")
+                return false
+            }
             if i < steps - 1 {
                 usleep(50_000) // 50ms between steps for animation to settle
             }
@@ -297,14 +300,21 @@ enum SpaceSwitcher {
         return switched
     }
 
-    private static func postSwipeGesture(goRight: Bool) {
+    private static func postSwipeGesture(goRight: Bool, steps: Int) -> Bool {
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 {
+            guard let events = MacOS27DockSwipe.makeEvents(goRight: goRight, steps: steps,
+                naturalScrollingEnabled: MacOS27DockSwipe.naturalScrollingEnabled) else { return false }
+            swLog("SWITCH", "dockSwipe: macOS27 HID payload phases=3")
+            for event in events { event.post(tap: .cgSessionEventTap) }
+            return true
+        }
         let flagDirection: Int64 = goRight ? 1 : 0
         let progress = goRight ? swipeProgress : -swipeProgress
         let velocity = goRight ? swipeVelocity : -swipeVelocity
 
         // Begin gesture
         guard let gestureA = CGEvent(source: nil),
-              let controlA = CGEvent(source: nil) else { return }
+              let controlA = CGEvent(source: nil) else { return false }
 
         gestureA.setIntegerValueField(Field.eventType, value: EventType.gesture)
 
@@ -321,7 +331,7 @@ enum SpaceSwitcher {
 
         // End gesture
         guard let gestureB = CGEvent(source: nil),
-              let controlB = CGEvent(source: nil) else { return }
+              let controlB = CGEvent(source: nil) else { return false }
 
         gestureB.setIntegerValueField(Field.eventType, value: EventType.gesture)
 
@@ -338,6 +348,7 @@ enum SpaceSwitcher {
 
         controlB.post(tap: .cgSessionEventTap)
         gestureB.post(tap: .cgSessionEventTap)
+        return true
     }
 
     // MARK: - Keyboard Shortcut Fallback

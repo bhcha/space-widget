@@ -13,6 +13,10 @@ let package = Package(
             resources: [
                 .process("Resources")
             ]
+        ),
+        .testTarget(
+            name: "SpaceWidgetTests",
+            dependencies: ["SpaceWidget"]
         )
     ]
 )

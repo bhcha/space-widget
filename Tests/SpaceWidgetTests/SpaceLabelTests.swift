@@ -160,8 +160,11 @@ final class SpaceLabelTests: XCTestCase {
             XCTAssertEqual(points, oldPoints)
             XCTAssertGreaterThanOrEqual(try XCTUnwrap(overlay.dismissAt), now + 2)
         }
+        // The text is the name alone; the Space number sits on the icon's top layer.
         let titles = bubble.sublayers?.compactMap { (($0 as? CATextLayer)?.string as? NSAttributedString)?.string }
-        XCTAssertEqual(titles, ["Research", "Space 2"])
+        XCTAssertEqual(titles, ["Research"])
+        let icon = try XCTUnwrap(bubble.sublayers?.compactMap { $0 as? SpaceStackIcon }.first)
+        XCTAssertEqual(icon.topNumber, "2")
     }
 
     @MainActor
@@ -380,6 +383,32 @@ final class SpaceLabelTests: XCTestCase {
         XCTAssertTrue(bubble.sublayers?.allSatisfy { $0.animationKeys() == nil } == true)
         let titles = bubble.sublayers?.compactMap { ($0 as? CATextLayer)?.string as? NSAttributedString }
         XCTAssertEqual(titles?.map(\.string), ["Space 3"])
+        let icon = try XCTUnwrap(bubble.sublayers?.compactMap { $0 as? SpaceStackIcon }.first)
+        XCTAssertEqual(icon.topNumber, "3")
+    }
+
+    @MainActor
+    func testStackIconRaisesTheBottomLayerOnEachSwitch() throws {
+        let icon = SpaceStackIcon()
+        let bottom = icon.order[0]
+        icon.play(number: 4, reduceMotion: false, delay: 0)
+        XCTAssertTrue(icon.order.last === bottom, "The bottom layer ends on top")
+        XCTAssertEqual(icon.topNumber, "4")
+        XCTAssertEqual(bottom.position.y, SpaceStackIcon.slots[2])
+        let rise = try XCTUnwrap(bottom.animation(forKey: "rise") as? CAAnimationGroup)
+        let path = try XCTUnwrap(rise.animations?.first as? CAKeyframeAnimation)
+        let points = try XCTUnwrap(path.values as? [NSValue]).map(\.pointValue)
+        XCTAssertGreaterThan(points[1].x, points[0].x, "It slides out to the side before rising")
+        XCTAssertEqual(points.last?.y, SpaceStackIcon.slots[2])
+        for (slot, layer) in icon.order.dropLast().enumerated() {
+            XCTAssertEqual(layer.position.y, SpaceStackIcon.slots[slot], "Other layers step down")
+            XCTAssertNotNil(layer.animation(forKey: "step"))
+        }
+        let next = icon.order[0]
+        icon.play(number: 5, reduceMotion: true, delay: 0)
+        XCTAssertTrue(icon.order.last === next)
+        XCTAssertEqual(icon.topNumber, "5")
+        XCTAssertNil(next.animationKeys(), "Reduced motion swaps layers without movement")
     }
 
     @MainActor

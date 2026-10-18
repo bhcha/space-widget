@@ -38,34 +38,114 @@ final class AgentToastQueueTests: XCTestCase {
     }
 
     @MainActor
-    func testSlotsStackDownwardWithoutOverlap() {
-        let screen = NSRect(x: 0, y: 0, width: 1920, height: 1055)
-        let frames = (0..<AgentToastPresenter.maximumVisible).map { AgentToastPresenter.frame(slot: $0, in: screen) }
-        XCTAssertEqual(frames[0].maxX, screen.maxX - AgentToastPresenter.margin)
-        XCTAssertEqual(frames[0].maxY, screen.maxY - AgentToastPresenter.margin)
-        for (upper, lower) in zip(frames, frames.dropFirst()) {
+    func testDeckOverlapsAtTheSpaceLabelAnchorAndFansOutWithoutOverlap() {
+        let screen = NSRect(x: 0, y: 0, width: 1920, height: 1080)
+        let visibleFrame = NSRect(x: 0, y: 0, width: 1920, height: 1055)
+        let anchor = AgentToastPresenter.anchor(screenFrame: screen, visibleFrame: visibleFrame)
+        XCTAssertEqual(anchor, SpaceLabelOverlay.destination(in: screen, visibleFrame: visibleFrame))
+        let front = AgentToastPresenter.frame(position: 0, expanded: false, anchor: anchor)
+        XCTAssertEqual(front.size, SpaceLabelOverlay.bubbleSize)
+        XCTAssertEqual(front.midX, anchor.x, accuracy: 0.5)
+        XCTAssertEqual(front.midY, anchor.y, accuracy: 0.5)
+        let collapsed = (0..<AgentToastPresenter.maximumVisible).map { AgentToastPresenter.frame(position: $0, expanded: false, anchor: anchor) }
+        for (upper, lower) in zip(collapsed, collapsed.dropFirst()) {
+            XCTAssertEqual(upper.minY - lower.minY, AgentToastPresenter.peek, "Each card behind peeks below")
+            XCTAssertTrue(upper.intersects(lower))
+        }
+        let fanned = (0..<AgentToastPresenter.maximumVisible).map { AgentToastPresenter.frame(position: $0, expanded: true, anchor: anchor) }
+        for (upper, lower) in zip(fanned, fanned.dropFirst()) {
             XCTAssertFalse(upper.intersects(lower))
             XCTAssertEqual(upper.minY - lower.maxY, AgentToastPresenter.spacing)
         }
-        XCTAssertTrue(screen.contains(frames.last!))
+        // A display offset from the origin keeps the same relative anchor.
+        let offset = AgentToastPresenter.anchor(screenFrame: screen.offsetBy(dx: 1920, dy: 0), visibleFrame: visibleFrame.offsetBy(dx: 1920, dy: 0))
+        XCTAssertEqual(offset, CGPoint(x: anchor.x + 1920, y: anchor.y))
     }
 
     @MainActor
-    func testRepositionedPanelsFollowStackOrder() throws {
+    func testRepositionedPanelsFollowDeckOrderBelowTheSpaceLabelLevel() throws {
         _ = NSApplication.shared
         let presenter = AgentToastPresenter()
         defer { presenter.clear() }
-        let screen = try XCTUnwrap(NSScreen.main?.visibleFrame)
+        let screen = try XCTUnwrap(NSScreen.main)
+        let anchor = AgentToastPresenter.anchor(screenFrame: screen.frame, visibleFrame: screen.visibleFrame)
         let items = (0..<3).map { notice("p\($0)") }
         items.forEach { presenter.show($0) }
         presenter.dismissCurrent(expectedID: items[1].id)
-        // Allow the 0.2s slide to settle; final frames are what matter.
-        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
-        for (slot, notice) in presenter.visible.enumerated() {
-            let panel = try XCTUnwrap(presenter.panel(for: notice.id))
-            XCTAssertEqual(panel.frame, AgentToastPresenter.frame(slot: slot, in: screen), "slot \(slot)")
+        func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.4)) }
+        func assertFrames(expanded: Bool, shift: Int = 0, file: StaticString = #filePath, line: UInt = #line) throws {
+            for (index, notice) in presenter.visible.enumerated() {
+                let panel = try XCTUnwrap(presenter.panel(for: notice.id))
+                XCTAssertEqual(panel.frame, AgentToastPresenter.frame(position: index + shift, expanded: expanded, anchor: anchor),
+                               "card \(index)", file: file, line: line)
+                XCTAssertLessThan(panel.level, SpacePanel(contentRect: .zero, styleMask: [], backing: .buffered, defer: true).level,
+                                  file: file, line: line)
+            }
         }
+        settle()
         XCTAssertEqual(presenter.visible.map(\.id), [items[2].id, items[0].id])
+        try assertFrames(expanded: false)
+        presenter.setExpanded(true)
+        settle()
+        try assertFrames(expanded: true)
+        presenter.setExpanded(false)
+        presenter.setSpaceLabelInFront(true)
+        settle()
+        try assertFrames(expanded: false, shift: 1)
+    }
+
+    @MainActor
+    func testSpaceLabelInFrontPausesTimersAndNewCardsWaitBehindIt() async throws {
+        _ = NSApplication.shared
+        let presenter = AgentToastPresenter(displayDuration: .milliseconds(150))
+        defer { presenter.clear() }
+        let first = notice("first")
+        presenter.show(first)
+        presenter.setSpaceLabelInFront(true)
+        let paused = try XCTUnwrap(presenter.timeRemaining(for: first.id))
+        let second = notice("second")
+        presenter.show(second) // arrives while the label is showing
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(presenter.visible.map(\.id), [second.id, first.id], "No card expires behind the label")
+        XCTAssertEqual(presenter.timeRemaining(for: first.id), paused)
+        XCTAssertEqual(presenter.timeRemaining(for: second.id), .milliseconds(150))
+        presenter.setSpaceLabelInFront(false)
+        for _ in 0..<200 where !presenter.visible.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(presenter.visible.isEmpty, "Timers resume once the label leaves")
+    }
+
+    @MainActor
+    func testArrivingAtATasksSpaceDismissesOnlyThatCard() {
+        _ = NSApplication.shared
+        let presenter = AgentToastPresenter()
+        defer { presenter.clear() }
+        func card(_ uuid: String) -> AgentCompletionNotice {
+            .init(event: notice(uuid).event, space: uuid, isTest: false, origin: .init(displayID: "d", spaceUUID: uuid))
+        }
+        let work = card("work"), data = card("data")
+        let unknown = notice("unknown")
+        [work, data, unknown].forEach { presenter.show($0) }
+        presenter.spaceDidBecomeActive(uuid: "work")
+        XCTAssertEqual(presenter.visible.map(\.id), [unknown.id, data.id])
+        presenter.spaceDidBecomeActive(uuid: "elsewhere")
+        XCTAssertEqual(presenter.visible.count, 2)
+    }
+
+    @MainActor
+    func testCardAppearanceNamesStateAndTone() {
+        let origin = AgentOrigin(displayID: "d", spaceUUID: "s")
+        let event = notice("a").event
+        let done = AgentToastAppearance(.init(event: event, space: "Work · Space 2", isTest: false, origin: origin))
+        XCTAssertEqual(done.tone, .done)
+        XCTAssertEqual(done.state, "Done")
+        let failed = AgentToastAppearance(.init(event: event, space: nil, isTest: false, origin: origin, navigationIssue: "Check settings."))
+        XCTAssertEqual(failed.tone, .warning)
+        XCTAssertEqual(failed.detail, "Check settings.")
+        let unknown = AgentToastAppearance(.init(event: event, space: nil, isTest: false))
+        XCTAssertEqual(unknown.state, "Unknown Space")
+        XCTAssertEqual(unknown.tone, .warning)
+        let preview = AgentToastAppearance(.init(event: event, space: nil, isTest: true, origin: origin))
+        XCTAssertEqual(preview.tone, .preview)
     }
 
     @MainActor

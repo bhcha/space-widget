@@ -5,14 +5,14 @@ import SwiftUI
 /// Lives in the widget's existing, display-sized panel. It never owns a window,
 /// activates an application, or participates in hit testing.
 final class SpaceLabelOverlay: NSView {
-    static let bubbleSize = CGSize(width: 238, height: 82)
+    static let bubbleSize = CGSize(width: 380, height: 62)
     static let holdDuration: TimeInterval = 2
     static let entranceDuration: TimeInterval = 0.30
     static let returnDuration: TimeInterval = 0.25
     private let bubble = CALayer()
     private let shape = CAShapeLayer()
     private let title = CATextLayer()
-    private let subtitle = CATextLayer()
+    private let icon = SpaceStackIcon()
     private let clock: () -> CFTimeInterval
     private var flight: Flight?
     private var dismissWork: DispatchWorkItem?
@@ -44,14 +44,15 @@ final class SpaceLabelOverlay: NSView {
         shape.lineWidth = 0.7
         shape.path = Self.dropletPath(tail: 0)
         bubble.addSublayer(shape)
-        for text in [title, subtitle] {
-            text.alignmentMode = .center
-            text.truncationMode = .end
-            text.isWrapped = false
-            bubble.addSublayer(text)
-        }
-        title.frame = CGRect(x: 18, y: 36, width: 202, height: 31)
-        subtitle.frame = CGRect(x: 18, y: 18, width: 202, height: 16)
+        title.alignmentMode = .left
+        title.truncationMode = .end
+        title.isWrapped = false
+        bubble.addSublayer(title)
+        // Same left column as a notification card's state dot.
+        icon.frame = CGRect(x: 14, y: (Self.bubbleSize.height - SpaceStackIcon.size) / 2,
+                            width: SpaceStackIcon.size, height: SpaceStackIcon.size)
+        bubble.addSublayer(icon)
+        title.frame = CGRect(x: 62, y: 19, width: Self.bubbleSize.width - 62 - 20, height: 24)
         layer?.addSublayer(bubble)
     }
 
@@ -120,6 +121,9 @@ final class SpaceLabelOverlay: NSView {
             phase = "new"
         }
         CATransaction.commit()
+        // The destination layer rises onto the stack as the bubble settles.
+        let iconDelay = phase == "new" ? revealDelay + Self.entranceDuration * 0.6 : 0
+        icon.play(number: ordinal, reduceMotion: reduceMotion, delay: iconDelay)
 
         // The return is scheduled independently of the entrance. Every Space
         // change earns a fresh readable hold; an old return cannot remain queued.
@@ -138,15 +142,12 @@ final class SpaceLabelOverlay: NSView {
         let label = trimmed.isEmpty || trimmed == "Untitled" ? "Space \(ordinal)" : trimmed
         let scale = window?.backingScaleFactor ?? 2
         title.contentsScale = scale
-        subtitle.contentsScale = scale
         shape.contentsScale = scale
+        icon.setContentsScale(scale)
+        // The Space number lives on the icon; the text is the name alone.
         title.string = NSAttributedString(string: label, attributes: [
-            .font: NSFont.systemFont(ofSize: 24, weight: .medium), .foregroundColor: NSColor.white
+            .font: NSFont.systemFont(ofSize: 19, weight: .medium), .foregroundColor: NSColor.white
         ])
-        subtitle.string = label == "Space \(ordinal)" ? nil : NSAttributedString(string: "Space \(ordinal)", attributes: [
-            .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.white.withAlphaComponent(0.65)
-        ])
-        title.frame.origin.y = label == "Space \(ordinal)" ? 26 : 36
     }
 
     /// Generation and deadline checks reject old queued callbacks after a switch.
@@ -393,5 +394,125 @@ final class SpaceLabelOverlay: NSView {
         path.closeSubpath()
         var flip = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: bubbleSize.height)
         return path.copy(using: &flip)!
+    }
+}
+
+/// The app icon's layer stack. On each Space change the bottom layer slides out to the
+/// side, comes to the front, and settles on top of the stack showing the Space number,
+/// while the other layers step down.
+final class SpaceStackIcon: CALayer {
+    static let size: CGFloat = 36
+    static let slots: [CGFloat] = [11.7, 18, 24.3] // bottom, middle, top centers (y up)
+    static let slideDuration: CFTimeInterval = 0.17
+    static let riseDuration: CFTimeInterval = 0.28
+    private(set) var order: [CAShapeLayer] = []
+    private var numbers: [CAShapeLayer: CATextLayer] = [:]
+
+    override init() {
+        super.init()
+        bounds = CGRect(x: 0, y: 0, width: Self.size, height: Self.size)
+        for slot in 0..<3 {
+            let diamond = CAShapeLayer()
+            diamond.bounds = CGRect(x: 0, y: 0, width: 27, height: 14.4)
+            let path = CGMutablePath()
+            path.addLines(between: [CGPoint(x: 0, y: 7.2), CGPoint(x: 13.5, y: 0),
+                                    CGPoint(x: 27, y: 7.2), CGPoint(x: 13.5, y: 14.4)])
+            path.closeSubpath()
+            diamond.path = path
+            diamond.fillColor = NSColor(calibratedWhite: 0.15, alpha: 1).cgColor
+            diamond.lineWidth = 2
+            diamond.lineJoin = .round
+            let number = CATextLayer()
+            number.alignmentMode = .center
+            number.frame = CGRect(x: 0, y: 1, width: 27, height: 14)
+            // Lay the digit flat on the diamond's face.
+            number.transform = CATransform3DMakeScale(1, 0.62, 1)
+            diamond.addSublayer(number)
+            numbers[diamond] = number
+            addSublayer(diamond)
+            order.append(diamond)
+            place(diamond, slot: slot)
+        }
+    }
+
+    override init(layer: Any) { super.init(layer: layer) }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func setContentsScale(_ scale: CGFloat) {
+        for diamond in order {
+            diamond.contentsScale = scale
+            numbers[diamond]?.contentsScale = scale
+        }
+    }
+
+    /// Number shown on the top layer.
+    var topNumber: String? { (order.last.flatMap { numbers[$0]?.string } as? NSAttributedString)?.string }
+
+    func play(number: Int, reduceMotion: Bool, delay: CFTimeInterval) {
+        let rising = order[0], rest = Array(order.dropFirst())
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        numbers[rising]?.string = NSAttributedString(string: "\(number)", attributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .bold), .foregroundColor: NSColor.white
+        ])
+        order = rest + [rising]
+        // Keep sibling order in step with the stack too; zPosition alone is ignored
+        // by snapshots that render the layer tree.
+        for diamond in order { addSublayer(diamond) }
+        for (slot, diamond) in order.enumerated() {
+            diamond.removeAllAnimations()
+            numbers[diamond]?.removeAllAnimations()
+            place(diamond, slot: slot)
+        }
+        CATransaction.commit()
+        guard !reduceMotion else { return }
+        let start = convertTime(CACurrentMediaTime(), from: nil) + delay
+        let total = Self.slideDuration + Self.riseDuration
+        let split = Self.slideDuration / total
+        let bottom = CGPoint(x: Self.size / 2, y: Self.slots[0])
+        let out = CGPoint(x: Self.size / 2 + 13.5, y: Self.slots[0])
+        let top = CGPoint(x: Self.size / 2, y: Self.slots[2])
+        let overshoot = CGPoint(x: Self.size / 2, y: Self.slots[2] + 1.6)
+        let path = CAKeyframeAnimation(keyPath: "position")
+        path.values = [bottom, out, overshoot, top].map { NSValue(point: $0) }
+        path.keyTimes = [0, split, split + (1 - split) * 0.75, 1].map { NSNumber(value: $0) }
+        path.timingFunctions = [CAMediaTimingFunction(name: .easeOut), CAMediaTimingFunction(name: .easeInEaseOut),
+                                CAMediaTimingFunction(name: .easeOut)]
+        // Below the others while sliding out, in front once it rises.
+        let depth = CAKeyframeAnimation(keyPath: "zPosition")
+        depth.values = [-1, 3]
+        depth.keyTimes = [0, NSNumber(value: split), 1]
+        depth.calculationMode = .discrete
+        let group = CAAnimationGroup()
+        group.animations = [path, depth]
+        group.beginTime = start
+        group.duration = total
+        group.fillMode = .backwards
+        rising.add(group, forKey: "rise")
+        for (slot, diamond) in rest.enumerated() {
+            let step = CABasicAnimation(keyPath: "position")
+            step.fromValue = NSValue(point: CGPoint(x: Self.size / 2, y: Self.slots[slot + 1]))
+            step.beginTime = start + Self.slideDuration
+            step.duration = Self.riseDuration * 0.8
+            step.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            step.fillMode = .backwards
+            diamond.add(step, forKey: "step")
+        }
+        for diamond in order {
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = diamond === rising ? 0 : (numbers[diamond]?.presentation()?.opacity ?? 1)
+            fade.beginTime = start + Self.slideDuration + 0.08
+            fade.duration = 0.18
+            fade.fillMode = .backwards
+            numbers[diamond]?.add(fade, forKey: "fade")
+        }
+    }
+
+    private func place(_ diamond: CAShapeLayer, slot: Int) {
+        let isTop = slot == 2
+        diamond.position = CGPoint(x: Self.size / 2, y: Self.slots[slot])
+        diamond.zPosition = CGFloat(slot)
+        diamond.strokeColor = NSColor.white.withAlphaComponent(isTop ? 1 : 0.45).cgColor
+        numbers[diamond]?.opacity = isTop ? 1 : 0
     }
 }

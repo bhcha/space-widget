@@ -212,7 +212,7 @@ Official references:
 - Native light/dark and reduced-motion behavior are checked. Existing AI hooks,
   customizable Control + Option + G, and verified Space return still work.
 
-## Next item: Toast stacking
+## Earlier item: Toast stacking (superseded by the capsule deck below)
 
 Requested 2026-10-16; recorded for future implementation.
 
@@ -242,6 +242,58 @@ Requested 2026-10-16; recorded for future implementation.
   turned off, older-toast click navigation and newest-target shortcut.
 - Not yet checked: the stack with real hook completions in the running app, and
   visual review of the slide animation.
+
+## Current item: Notification capsules merged with the Space label
+
+Decided 2026-10-18 from an HTML mockup review. Replaces the top-right toast stack
+above; the queue, per-toast timers, per-toast destinations and the shortcut rules
+stay.
+
+| Item | Decision |
+| --- | --- |
+| Shape | Notifications take the Space label's look: dark capsule (white 0.14, 96%), 0.7pt white 18% outline, fully rounded ends. Both are **380×62pt** |
+| Position | Same anchor as the Space label today (top center, about 207pt below the top of a 1080pt display) |
+| State | A colored dot and bold state word on the left: Done green, navigation failure and Unknown Space orange, Preview grey. Needs input blue is reserved for the question popup work |
+| Text | Line 1: project and state. Line 2: agent · app · Space, or the reason it cannot navigate |
+| Several at once | **Overlapping deck**: newest in front, each older card 12pt lower, 5% smaller and fainter. At most 3 cards, the rest wait (`+N more`) |
+| Clicking | Any visible part of any card, front or back, navigates straight to that card's Space. Hovering 0.6s fans the deck out into a list |
+| Space label | Keeps its droplet entrance from the widget and return to it. New size 380×62, single line with the Space name (`Space N` when unnamed). The number moves into a layer-stack icon (from the app icon) on the left: the destination layer slides out, rises onto the stack and shows the Space number |
+| Toast entrance | Plain appearance in the deck; no droplet motion |
+
+Overlap rules:
+
+1. A Space change while cards are visible: the Space label becomes the front card
+   of the same deck; the notification cards step back one card and come forward
+   again when it leaves. Their back edges stay clickable (the label is click-through).
+2. A notification that arrives while the Space label is showing: the sound plays at
+   once; the card waits directly behind the label and comes forward when it leaves.
+   The label keeps its normal 2s hold.
+3. While the Space label is in front, notification timers pause.
+4. Arriving at a finished task's Space by any route (gesture, Mission Control,
+   widget) dismisses that task's Done card.
+
+Implementation notes: the Space label stays inside the widget panel; notification
+panels sit one window level below it so the label always draws in front.
+
+### First implementation — 2026-10-18
+
+- `AgentToastPresenter`: deck geometry from `SpaceLabelOverlay.destination`, one
+  panel per card at `floating - 1`, depth drawn in SwiftUI (scale from the top edge,
+  fade). Hover is tracked with an always-active tracking area, so it works while
+  SpaceWidget is not the active app. `setSpaceLabelInFront` pauses and resumes
+  per-card timers; `spaceDidBecomeActive(uuid:)` dismisses arrived cards (reason
+  `arrived`), skipping a card that is mid-navigation.
+- `SpacePanelController` reports the label's visibility on `NSScreen.main` (the
+  deck's display) and every active Space change.
+- `SpaceLabelOverlay`: 380×62, single-line name (19pt), `SpaceStackIcon` on the left.
+  On a new entrance the icon plays as the bubble settles; on a later switch it plays
+  at once. Reduced Motion swaps layers without movement.
+- Automated: 131 tests, 4 opt-in skipped, 0 failures. New: deck anchor and fan-out
+  geometry, panel level below the widget, label-in-front pause and resume, arrival
+  dismissal, card appearance, icon rise order. Rendered card and label checked as
+  images.
+- Not yet checked in the running app: hover fan-out, clicking a back card's edge,
+  the icon motion, and the deck during real hook completions.
 
 ## Following item: Claude / Codex question popup
 

@@ -200,7 +200,10 @@ final class SpacePanelController {
         )
         context.currentEffectiveIconsPerPage = initialEffectiveIcons
         panelContexts[displayID] = context
-        labelOverlay.onVisibilityChanged = { [weak self] in self?.updateAllBarViews() }
+        labelOverlay.onVisibilityChanged = { [weak self] in
+            self?.updateAllBarViews()
+            self?.syncToastDeck()
+        }
 
         logPanelSpaces(context, reason: "panelCreated")
         // Space tagging can lag window creation; sample again after the window server settles.
@@ -546,10 +549,22 @@ final class SpacePanelController {
                     let changed = context.labelTransitions.observe(space)
                     self.panelContexts[displayID] = context
                     if space == nil { context.labelOverlay.cancel() }
-                    if changed, let space { _ = self.presentSpaceLabel(space, on: displayID) }
+                    if changed, let space {
+                        _ = self.presentSpaceLabel(space, on: displayID)
+                        if let uuid = space.uuid {
+                            MainActor.assumeIsolated { AgentToastPresenter.shared.spaceDidBecomeActive(uuid: uuid) }
+                        }
+                    }
                 }
             }
             .store(in: &cancellables)
+    }
+
+    /// The Space label on the notification deck's display is the deck's front card while it shows.
+    private func syncToastDeck() {
+        let deckDisplay = NSScreen.main.flatMap(displayIdentifier(for:))
+        let inFront = deckDisplay.flatMap { panelContexts[$0]?.labelOverlay.isPresenting } ?? false
+        MainActor.assumeIsolated { AgentToastPresenter.shared.setSpaceLabelInFront(inFront) }
     }
 
     @discardableResult

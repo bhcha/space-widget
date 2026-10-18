@@ -164,8 +164,9 @@ final class HookDiagnosticsTests: XCTestCase {
         let model = AgentNotificationModel(defaults: defaults, originNavigation: navigation, diagnostics: diagnostics,
             present: { presenter.show($0) }, playSound: {})
         for event in events { model.receive(event) }
-        let first = try XCTUnwrap(presenter.currentNotice)
-        XCTAssertEqual(first.title, "text2sql")
+        // Both toasts are stacked; the older text2sql one is clicked first.
+        XCTAssertEqual(presenter.visible.map(\.title), ["SD", "text2sql"])
+        let first = try XCTUnwrap(presenter.visible.first { $0.title == "text2sql" })
         XCTAssertEqual(first.destination, sql.origin)
         await presenter.activate(first)
         await presenter.activate(first) // queued/stale click must not select the next toast

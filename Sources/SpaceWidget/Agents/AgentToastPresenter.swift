@@ -1,15 +1,24 @@
 import AppKit
 import SwiftUI
 
-/// Nonactivating FIFO. Clicking and the temporary global shortcut share one action.
+/// Nonactivating stack, newest on top. Up to `maximumVisible` toasts are shown at once;
+/// later arrivals wait in a bounded FIFO. Each toast keeps its own timer and destination.
+/// Clicking acts on that toast; the temporary global shortcut acts on the newest navigable one.
 @MainActor
 final class AgentToastPresenter {
     static let shared = AgentToastPresenter()
+    static let maximumVisible = 3
     static let maximumPending = 128
-    private(set) var panel: NSPanel?
-    private(set) var currentNotice: AgentCompletionNotice?
+    static let toastSize = CGSize(width: 390, height: 170)
+    static let spacing: CGFloat = 10
+    static let margin: CGFloat = 20
+
+    /// Newest first; index 0 is the top slot.
+    private(set) var visible: [AgentCompletionNotice] = []
     private(set) var pending: [AgentCompletionNotice] = []
-    private var dismissal: Task<Void, Never>?
+    private var panels: [UUID: NSPanel] = [:]
+    private var slotStates: [UUID: AgentToastSlotState] = [:]
+    private var dismissals: [UUID: Task<Void, Never>] = [:]
     private var activating: UUID?
     private let navigation: AgentOriginNavigation
     private let shortcut: AgentToastShortcut
@@ -24,8 +33,23 @@ final class AgentToastPresenter {
         self.diagnostics = diagnostics
     }
 
+    /// The top (newest) visible toast.
+    var currentNotice: AgentCompletionNotice? { visible.first }
+    /// The top toast's panel.
+    var panel: NSPanel? { currentNotice.flatMap { panels[$0.id] } }
+    func panel(for id: UUID) -> NSPanel? { panels[id] }
+    /// The newest visible toast that can navigate; the shortcut acts on it.
+    var shortcutTarget: AgentCompletionNotice? { visible.first { $0.destination != nil } }
+
+    /// Frame of a stack slot, counted from the top-right corner of `visibleFrame`.
+    static func frame(slot: Int, in visibleFrame: NSRect) -> NSRect {
+        NSRect(x: visibleFrame.maxX - margin - toastSize.width,
+               y: visibleFrame.maxY - margin - toastSize.height - CGFloat(slot) * (toastSize.height + spacing),
+               width: toastSize.width, height: toastSize.height)
+    }
+
     func activateCurrent() async {
-        guard let notice = currentNotice else { return }
+        guard let notice = shortcutTarget else { return }
         await activate(notice)
     }
 
@@ -33,96 +57,160 @@ final class AgentToastPresenter {
         var fields = notice.diagnosticFields
         fields["input"] = input
         fields["visible_notice"] = currentNotice?.id.uuidString ?? "none"
-        guard let destination = notice.destination, currentNotice?.id == notice.id, activating == nil else {
-            fields["reason"] = notice.destination == nil ? "no_destination" : (currentNotice?.id != notice.id ? "stale_notice" : "already_activating")
+        fields["visible_count"] = String(visible.count)
+        let isVisible = visible.contains { $0.id == notice.id }
+        guard let destination = notice.destination, isVisible, activating == nil else {
+            fields["reason"] = notice.destination == nil ? "no_destination" : (!isVisible ? "stale_notice" : "already_activating")
             diagnostics.emit("toast.activation_ignored", event: notice.event, fields: fields)
             return
         }
         diagnostics.emit("toast.activated", event: notice.event, fields: fields)
         activating = notice.id
-        dismissal?.cancel()
-        // Keep the transient override until this toast is dismissed, so a second
+        dismissals.removeValue(forKey: notice.id)?.cancel()
+        // Keep the transient override until activation ends, so a second
         // press during activation cannot fall through to a window shortcut.
-        panel?.orderOut(nil)
+        panels[notice.id]?.orderOut(nil)
         let navigated = await navigation.navigate(to: destination, event: notice.event, noticeID: notice.id)
         fields["success"] = String(navigated)
         diagnostics.emit("toast.navigation_finished", event: notice.event, fields: fields)
         activating = nil
-        guard currentNotice?.id == notice.id else { return }
-        if navigated { dismissCurrent(expectedID: notice.id) }
+        guard let index = visible.firstIndex(where: { $0.id == notice.id }) else { refreshShortcut(); return }
+        if navigated { dismiss(notice.id, reason: "navigated") }
         else {
-            display(AgentCompletionNotice(event: notice.event, space: notice.space, isTest: false,
-                origin: notice.origin, navigationIssue: "Could not reach the task's Space. Check Accessibility and Mission Control settings."))
+            let failed = AgentCompletionNotice(event: notice.event, space: notice.space, isTest: false,
+                origin: notice.origin, navigationIssue: "Could not reach the task's Space. Check Accessibility and Mission Control settings.")
+            removePanel(notice.id)
+            visible[index] = failed
+            diagnostics.emit("toast.displayed", event: failed.event, fields: failed.diagnosticFields.merging(["slot": String(index), "visible_count": String(visible.count)]) { _, new in new })
+            present(failed)
+            layout(animated: false)
+            refreshShortcut()
         }
     }
 
     static func playSound() { NSSound(named: "Glass")?.play() }
 
     func show(_ notice: AgentCompletionNotice) {
-        if currentNotice != nil {
+        if visible.count >= Self.maximumVisible {
             if pending.count == Self.maximumPending {
                 let dropped = pending.removeFirst()
                 diagnostics.emit("toast.queue_dropped", event: dropped.event, fields: dropped.diagnosticFields)
             }
             pending.append(notice)
             diagnostics.emit("toast.queued", event: notice.event, fields: notice.diagnosticFields.merging(["queue_count": String(pending.count)]) { _, new in new })
-        } else { display(notice) }
+        } else { insertOnTop(notice) }
     }
 
     func clear() {
-        if let currentNotice { diagnostics.emit("toast.cleared", event: currentNotice.event, fields: currentNotice.diagnosticFields) }
-        dismissal?.cancel()
-        currentNotice = nil
+        for notice in visible { diagnostics.emit("toast.cleared", event: notice.event, fields: notice.diagnosticFields) }
+        for id in visible.map(\.id) { removePanel(id) }
+        visible.removeAll()
         pending.removeAll()
-        panel?.orderOut(nil)
         shortcut.configure(available: false)
     }
 
+    /// Dismisses `expectedID` if it is visible, or the top toast when no ID is given.
     func dismissCurrent(expectedID: UUID? = nil, reason: String = "dismiss") {
-        guard let currentNotice, expectedID == nil || expectedID == currentNotice.id else { return }
-        diagnostics.emit("toast.dismissed", event: currentNotice.event, fields: currentNotice.diagnosticFields.merging(["reason": reason]) { _, new in new })
-        dismissal?.cancel()
-        self.currentNotice = nil
-        panel?.orderOut(nil)
-        shortcut.configure(available: false)
-        if !pending.isEmpty { display(pending.removeFirst()) }
+        guard let id = expectedID ?? currentNotice?.id else { return }
+        dismiss(id, reason: reason)
     }
 
-    private func display(_ notice: AgentCompletionNotice) {
-        dismissal?.cancel()
-        panel?.orderOut(nil)
-        currentNotice = notice
-        diagnostics.emit("toast.displayed", event: notice.event, fields: notice.diagnosticFields)
-        shortcut.configure(available: notice.destination != nil) { [weak self] in
-            Task { @MainActor in await self?.activate(notice, input: "shortcut") }
+    private func dismiss(_ id: UUID, reason: String) {
+        guard let index = visible.firstIndex(where: { $0.id == id }) else { return }
+        let notice = visible.remove(at: index)
+        diagnostics.emit("toast.dismissed", event: notice.event, fields: notice.diagnosticFields.merging(["reason": reason]) { _, new in new })
+        removePanel(id)
+        if !pending.isEmpty {
+            insertOnTop(pending.removeFirst())
+        } else {
+            layout(animated: true)
+            refreshShortcut()
         }
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 390, height: 170),
+    }
+
+    private func insertOnTop(_ notice: AgentCompletionNotice) {
+        visible.insert(notice, at: 0)
+        diagnostics.emit("toast.displayed", event: notice.event, fields: notice.diagnosticFields.merging(["slot": "0", "visible_count": String(visible.count)]) { _, new in new })
+        present(notice)
+        layout(animated: true)
+        refreshShortcut()
+    }
+
+    private func present(_ notice: AgentCompletionNotice) {
+        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: Self.toastSize),
                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        panel.contentView = NSHostingView(rootView: AgentToastView(notice: notice, shortcut: shortcut, navigate: { [weak self] in
+        let state = AgentToastSlotState()
+        panel.contentView = NSHostingView(rootView: AgentToastView(notice: notice, shortcut: shortcut, slot: state, navigate: { [weak self] in
             Task { @MainActor in await self?.activate(notice) }
         }, dismiss: { [weak self] in self?.dismissCurrent(expectedID: notice.id) }))
-        if let frame = NSScreen.main?.visibleFrame {
-            panel.setFrameOrigin(NSPoint(x: frame.maxX - 410, y: frame.maxY - 190))
+        if let screen = NSScreen.main?.visibleFrame {
+            // A new toast appears directly in the top slot; older ones slide down.
+            panel.setFrame(Self.frame(slot: 0, in: screen), display: false)
         }
-        self.panel = panel
+        panels[notice.id] = panel
+        slotStates[notice.id] = state
         panel.orderFrontRegardless()
         let duration = displayDuration
-        dismissal = Task { [weak self] in
+        dismissals[notice.id] = Task { [weak self] in
             try? await Task.sleep(for: duration)
             guard !Task.isCancelled else { return }
             self?.dismissCurrent(expectedID: notice.id, reason: "timeout")
         }
     }
+
+    private func removePanel(_ id: UUID) {
+        dismissals.removeValue(forKey: id)?.cancel()
+        panels.removeValue(forKey: id)?.orderOut(nil)
+        slotStates.removeValue(forKey: id)
+    }
+
+    private func layout(animated: Bool) {
+        guard let screen = NSScreen.main?.visibleFrame else { return }
+        let animate = animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        for (slot, notice) in visible.enumerated() {
+            guard let panel = panels[notice.id] else { continue }
+            let target = Self.frame(slot: slot, in: screen)
+            guard panel.frame != target else { continue }
+            if animate {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.2
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    panel.animator().setFrame(target, display: true)
+                }
+            } else {
+                panel.setFrame(target, display: true)
+            }
+        }
+    }
+
+    private func refreshShortcut() {
+        let target = shortcutTarget
+        for notice in visible { slotStates[notice.id]?.isShortcutTarget = notice.id == target?.id }
+        // While a toast is navigating, keep the override registered even if no other
+        // toast can navigate, so a repeated press cannot reach a window shortcut.
+        guard target != nil || activating != nil else { shortcut.configure(available: false); return }
+        shortcut.configure(available: true) { [weak self] in
+            guard let target else { return }
+            Task { @MainActor in await self?.activate(target, input: "shortcut") }
+        }
+    }
+}
+
+/// Per-toast presentation state that changes while the toast is visible.
+@MainActor
+final class AgentToastSlotState: ObservableObject {
+    @Published var isShortcutTarget = false
 }
 
 private struct AgentToastView: View {
     let notice: AgentCompletionNotice
     @ObservedObject var shortcut: AgentToastShortcut
+    @ObservedObject var slot: AgentToastSlotState
     let navigate: () -> Void
     let dismiss: () -> Void
     private var content: some View {
@@ -147,7 +235,7 @@ private struct AgentToastView: View {
                 } else if notice.destination != nil {
                     HStack {
                         Button(notice.actionTitle, action: navigate)
-                        if shortcut.registered { Text(shortcut.binding.displayString).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary) }
+                        if shortcut.registered && slot.isShortcutTarget { Text(shortcut.binding.displayString).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary) }
                     }.font(.caption)
                 } else {
                     Text(notice.isTest ? "Notification preview" : "Could not determine the Space where this task started.")

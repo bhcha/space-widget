@@ -66,7 +66,7 @@ final class AgentToastShortcutTests: XCTestCase {
     }
 
     @MainActor
-    func testShortcutAndClickNavigateOnlyVisibleToastAndReleaseAfterDismiss() async throws {
+    func testShortcutTargetsNewestAndClickNavigatesOlderToastToItsOwnSpace() async throws {
         _ = NSApplication.shared
         let backend = OriginBackendFixture()
         let a = AgentOriginSnapshot.Space(uuid: "a", id: 1, ordinal: 1, displayID: "display")
@@ -83,6 +83,8 @@ final class AgentToastShortcutTests: XCTestCase {
         presenter.show(first)
         presenter.show(second)
         XCTAssertTrue(shortcut.registered)
+        XCTAssertEqual(presenter.visible.map(\.id), [second.id, first.id])
+        XCTAssertEqual(presenter.shortcutTarget?.id, second.id)
         if let destination = ProcessInfo.processInfo.environment["SPACEWIDGET_ACTIONABLE_TOAST_PNG"] {
             let view = try XCTUnwrap(presenter.panel?.contentView)
             view.layoutSubtreeIfNeeded()
@@ -90,19 +92,21 @@ final class AgentToastShortcutTests: XCTestCase {
             view.cacheDisplay(in: view.bounds, to: bitmap)
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: destination))
         }
-        let stale = registrar.handlers.last!
-        registrar.fire()
-        for _ in 0..<200 {
-            if presenter.currentNotice?.id == second.id { break }
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        // Clicking the older, lower toast goes to its own Space and leaves the newer one.
+        await presenter.activate(first)
         XCTAssertEqual(backend.switched, [1])
-        XCTAssertEqual(presenter.currentNotice?.id, second.id)
-        stale()
+        XCTAssertEqual(presenter.visible.map(\.id), [second.id])
         await presenter.activate(first) // stale click
         XCTAssertEqual(backend.switched, [1])
+        let stale = registrar.handlers.last!
         backend.current = nil
-        await presenter.activate(second)
+        registrar.fire()
+        for _ in 0..<200 {
+            if presenter.visible.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(backend.switched, [1, 2])
+        stale()
         XCTAssertEqual(backend.switched, [1, 2])
         XCTAssertNil(presenter.currentNotice)
         XCTAssertFalse(shortcut.registered)

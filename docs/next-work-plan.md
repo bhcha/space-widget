@@ -222,8 +222,26 @@ Requested 2026-10-16; recorded for future implementation.
 - Each toast must retain its own content and destination after repositioning;
   clicking an older toast must still navigate to that toast's original Space.
 - Verify consecutive arrivals and dismissal while several toasts are visible.
-  Behavior when the stack exceeds the available screen height remains to be
-  decided during implementation.
+
+### Decisions and first implementation — 2026-10-18
+
+- User decisions: show at most **3** toasts at once and queue the rest
+  (bounded FIFO, 128); the **Control + Option + G** shortcut acts on the newest
+  (top) toast that can navigate. Only that toast shows the shortcut hint.
+- `AgentToastPresenter` now keeps one panel, timer and destination per visible
+  toast (newest first). A new toast appears in the top slot and older ones slide
+  down (0.2s, no movement with Reduce Motion). Dismissal closes the gap; the
+  oldest waiting toast then enters on top, since it arrived after every visible one.
+- Clicking any visible toast navigates to its own Space; only one navigation runs
+  at a time. A failed navigation replaces that toast in its slot with the failure
+  message. Slots are 390×170 with 10pt spacing from the top-right of the main
+  screen's visible frame.
+- Automated: 127 tests, 4 opt-in skipped, 0 failures, including stack order,
+  overflow queueing, gap closing, non-overlapping slot geometry, final panel
+  frames after repositioning, per-toast timeout, clearing when notifications are
+  turned off, older-toast click navigation and newest-target shortcut.
+- Not yet checked: the stack with real hook completions in the running app, and
+  visual review of the slide animation.
 
 ## Following item: Claude / Codex question popup
 

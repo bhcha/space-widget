@@ -76,6 +76,11 @@ struct AgentDetectionView: View {
                     .font(.caption).foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                Label("Some terminals cannot report which window started a task. In Ghostty, when its windows are on more than one Space, the notification shows Unknown Space and cannot return to it.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 HStack {
                     Toggle("Enable notification shortcut", isOn: $shortcut.binding.enabled)
                         .labelsHidden().toggleStyle(.checkbox).frame(width: 20)

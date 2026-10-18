@@ -10,6 +10,7 @@
 | `~/.config/space-dock/shortcuts.json` | User-customized hotkey bindings. |
 | `~/.config/space-dock/templates.json` | Saved layout templates. |
 | `~/Library/Preferences/com.apple.spaces.plist` | macOS source of truth for space → uuid mapping. Read with `defaults read com.apple.spaces` or `plutil -convert json -o -`. |
+| `~/Library/LaunchAgents/local.spacewidget.plist` | Login auto-start LaunchAgent. Runs the `RunSpaceWidget.app` launcher script (`RunAtLoad`); `AbandonProcessGroup=true` is required or launchd kills the backgrounded binary when the script exits. No `KeepAlive`, so manual relaunches don't fight launchd. Disable: `launchctl bootout gui/$(id -u)/local.spacewidget`. |
 
 ## Log tags worth knowing
 
@@ -23,6 +24,7 @@
 | `[PANEL]` | Panel/screen lifecycle (display add/remove) |
 | `[LABEL]` | **Diagnostic** for label resolution drift — see below |
 | `[HOTKEY]` | Hotkey registration failures only |
+| `[AX]` | Startup Accessibility trust status (`accessibility trusted=true|false`). `false` means all CGEvent posting (dock-swipe space switch, Ctrl+N fallback) and AX window actions silently no-op. |
 | `[CLICKDIAG]` | **Diagnostic** for panel click routing (post-HDMI-unplug fall-through). Fires at panel creation (+1s resample) and, via a global left-click monitor, on any click near a bar that the window server routed to another app — includes a CGWindowList z-order dump. Permanently enabled. |
 
 ### `[LABEL]` log subtypes
@@ -61,6 +63,13 @@ swift build
 ```
 
 The `.app` bundle and the direct binary are treated as **separate apps** by macOS for Accessibility permission. If the user reports shortcuts not working after a macOS upgrade, suspect AX permission revocation; restart the binary so macOS re-prompts.
+
+### Accessibility (TCC) attribution — 2026-08 findings
+
+- **Terminal-direct launch** inherits the terminal's (Ghostty's) AX permission → always works.
+- **`RunSpaceWidget.app` launch**: the bash wrapper spawns the binary in the background and exits, so TCC attributes AX permission to the **`SpaceWidget` binary itself** (System Settings entry named "SpaceWidget"), NOT the launcher bundle. Granting the launcher bundle does nothing.
+- Startup calls `AXIsProcessTrustedWithOptions(prompt)` (`SpaceWidgetApp.swift`) — if untrusted it shows the system prompt and registers the entry. Check `grep '\[AX\]'` in the log for `trusted=true|false`.
+- **The TCC grant is pinned to the build's ad-hoc signature (cdhash)**: after `swift build` produces a new binary the grant can silently drop (`trusted=false`, dock-swipe `postVerify switched=false`, clicks ignored). Fix: System Settings → Accessibility → toggle the SpaceWidget entry off/on, or delete the entry and relaunch to re-prompt. Stale same-named entries from old builds are a trap — when in doubt, delete all SpaceWidget entries and re-register fresh.
 
 ## macOS-specific gotchas
 

@@ -34,7 +34,7 @@ and installation does not promote it to connected before a real callback.
   and foreign helper directories fail without replacing the config. macOS's
   root system `/var` and `/tmp` aliases are allowed.
 - The explicitly installed helper is a private durable copy of the native
-  executable at `spacewidget-hooks/receiver-v4`, with an integrity digest.
+  executable at `spacewidget-hooks/receiver-v6`, with an integrity digest.
   It does not depend on the checkout remaining present. The helper exits before
   ordinary app startup, configuration migration, or Accessibility prompting.
 - A missing helper can be restored only with bytes matching its recorded digest.
@@ -42,12 +42,18 @@ and installation does not promote it to connected before a real callback.
   receiver or its support directory cannot authorize different code at the same
   command path. The initial digest is saved before the helper is published.
 - Reinstall does **not** silently replace code behind an already approved
-  command. The explicit v1/v2/v3 → v4 update uses a new versioned command path, which
+  command. The explicit v1–v5 → v6 update uses a new versioned command path, which
   causes Codex to require approval again. The previous helper and its digest
   are verified before migration and retained for any in-flight invocation. A modified helper fails integrity
   checking; uninstall still removes its hook references.
 - Uninstall retains the inert helper and backups instead of recursively deleting
   potentially user-modified directories or disrupting in-flight helpers.
+- v6 rejects app-foreground guesses when host windows span multiple Spaces or
+  include an unmapped window. Environment-only host matches cannot establish an
+  origin either; the host must be an actual process ancestor. A captured origin carries `single_host_space_v1`
+  evidence through its matched request context. Earlier stored origins are kept
+  as diagnostic metadata, but the updated app does not navigate to them. Reload
+  provider hook configuration and submit a new request after upgrading.
 
 ## Readiness and trust
 

@@ -4,7 +4,7 @@ import XCTest
 final class AgentApplicationCaptureTests: XCTestCase {
     private let ghostty = AgentApplicationTarget(bundleID: "com.mitchellh.ghostty", processID: 42, name: "Ghostty")
     private let terminal = AgentApplicationTarget(bundleID: "com.apple.Terminal", processID: 43, name: "Terminal")
-    func testCapturePrefersActualAncestorAndFallsBackToVerifiedTerminalEnvironment() {
+    func testAppDisplayPrefersActualAncestorAndCanUseRunningTerminalEnvironmentHint() {
         let apps = [ghostty, terminal]
         XCTAssertEqual(AgentApplicationCapture.resolve(ancestors: [99, 42],
             environment: ["TERM_PROGRAM": "Apple_Terminal"], applications: apps), ghostty)
@@ -17,6 +17,30 @@ final class AgentApplicationCaptureTests: XCTestCase {
             environment: ["TERM_PROGRAM": "ghostty"], applications: [terminal]))
         XCTAssertNil(AgentApplicationCapture.resolve(ancestors: [],
             environment: ["TERM_PROGRAM": "ghostty"], applications: [ghostty, ghostty]))
+    }
+
+    func testEnvironmentOnlyHostCannotCertifyEvenASingleSpace() {
+        let origin = AgentOrigin(displayID: "display", spaceUUID: "wrong-terminal-space")
+        var inspected: [pid_t] = []
+        let detached = AgentLaunchContext.capture(ancestors: [99], environment: ["TERM_PROGRAM": "ghostty"],
+            applications: [ghostty, terminal], inspect: { pid in
+                inspected.append(pid)
+                return (origin, ["capture_reason": "single_host_space"])
+            })
+        XCTAssertEqual(detached.application, ghostty)
+        XCTAssertNil(detached.origin)
+        XCTAssertEqual(detached.diagnostics["host_match"], "environment")
+        XCTAssertEqual(detached.diagnostics["capture_reason"], "unverified_host")
+        XCTAssertTrue(inspected.isEmpty)
+
+        let attached = AgentLaunchContext.capture(ancestors: [99, 42], environment: ["TERM_PROGRAM": "Apple_Terminal"],
+            applications: [ghostty, terminal], inspect: { pid in
+                inspected.append(pid)
+                return (origin, ["capture_reason": "single_host_space"])
+            })
+        XCTAssertEqual(attached.origin, origin)
+        XCTAssertEqual(attached.diagnostics["host_match"], "ancestor")
+        XCTAssertEqual(inspected, [42])
     }
 
     func testLiveTerminalApplicationCaptureWhenRequested() throws {

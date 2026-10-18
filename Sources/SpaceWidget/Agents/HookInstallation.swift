@@ -37,10 +37,11 @@ struct HookInstallationReceipt: Codable {
 }
 
 struct HookInstallation {
+    static let currentHelperVersion = 6
     let agent: LocalAgent
     let directory: URL
     let helperVersion: Int
-    init(agent: LocalAgent, directory: URL, helperVersion: Int = 4) {
+    init(agent: LocalAgent, directory: URL, helperVersion: Int = Self.currentHelperVersion) {
         self.agent = agent
         self.directory = directory
         self.helperVersion = helperVersion

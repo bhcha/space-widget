@@ -14,12 +14,14 @@ final class AgentToastPresenter {
     private let navigation: AgentOriginNavigation
     private let shortcut: AgentToastShortcut
     private let displayDuration: Duration
+    private let diagnostics: HookDiagnostics
 
     init(navigation: AgentOriginNavigation? = nil, displayDuration: Duration = .seconds(10),
-         shortcut: AgentToastShortcut? = nil) {
+         shortcut: AgentToastShortcut? = nil, diagnostics: HookDiagnostics = .live) {
         self.navigation = navigation ?? .shared
         self.shortcut = shortcut ?? .shared
         self.displayDuration = displayDuration
+        self.diagnostics = diagnostics
     }
 
     func activateCurrent() async {
@@ -27,15 +29,24 @@ final class AgentToastPresenter {
         await activate(notice)
     }
 
-    func activate(_ notice: AgentCompletionNotice) async {
-        guard let destination = notice.destination, currentNotice?.id == notice.id,
-              activating == nil else { return }
+    func activate(_ notice: AgentCompletionNotice, input: String = "click") async {
+        var fields = notice.diagnosticFields
+        fields["input"] = input
+        fields["visible_notice"] = currentNotice?.id.uuidString ?? "none"
+        guard let destination = notice.destination, currentNotice?.id == notice.id, activating == nil else {
+            fields["reason"] = notice.destination == nil ? "no_destination" : (currentNotice?.id != notice.id ? "stale_notice" : "already_activating")
+            diagnostics.emit("toast.activation_ignored", event: notice.event, fields: fields)
+            return
+        }
+        diagnostics.emit("toast.activated", event: notice.event, fields: fields)
         activating = notice.id
         dismissal?.cancel()
         // Keep the transient override until this toast is dismissed, so a second
         // press during activation cannot fall through to a window shortcut.
         panel?.orderOut(nil)
-        let navigated = await navigation.navigate(to: destination)
+        let navigated = await navigation.navigate(to: destination, event: notice.event, noticeID: notice.id)
+        fields["success"] = String(navigated)
+        diagnostics.emit("toast.navigation_finished", event: notice.event, fields: fields)
         activating = nil
         guard currentNotice?.id == notice.id else { return }
         if navigated { dismissCurrent(expectedID: notice.id) }
@@ -49,12 +60,17 @@ final class AgentToastPresenter {
 
     func show(_ notice: AgentCompletionNotice) {
         if currentNotice != nil {
-            if pending.count == Self.maximumPending { pending.removeFirst() }
+            if pending.count == Self.maximumPending {
+                let dropped = pending.removeFirst()
+                diagnostics.emit("toast.queue_dropped", event: dropped.event, fields: dropped.diagnosticFields)
+            }
             pending.append(notice)
+            diagnostics.emit("toast.queued", event: notice.event, fields: notice.diagnosticFields.merging(["queue_count": String(pending.count)]) { _, new in new })
         } else { display(notice) }
     }
 
     func clear() {
+        if let currentNotice { diagnostics.emit("toast.cleared", event: currentNotice.event, fields: currentNotice.diagnosticFields) }
         dismissal?.cancel()
         currentNotice = nil
         pending.removeAll()
@@ -62,8 +78,9 @@ final class AgentToastPresenter {
         shortcut.configure(available: false)
     }
 
-    func dismissCurrent(expectedID: UUID? = nil) {
+    func dismissCurrent(expectedID: UUID? = nil, reason: String = "dismiss") {
         guard let currentNotice, expectedID == nil || expectedID == currentNotice.id else { return }
+        diagnostics.emit("toast.dismissed", event: currentNotice.event, fields: currentNotice.diagnosticFields.merging(["reason": reason]) { _, new in new })
         dismissal?.cancel()
         self.currentNotice = nil
         panel?.orderOut(nil)
@@ -75,8 +92,9 @@ final class AgentToastPresenter {
         dismissal?.cancel()
         panel?.orderOut(nil)
         currentNotice = notice
+        diagnostics.emit("toast.displayed", event: notice.event, fields: notice.diagnosticFields)
         shortcut.configure(available: notice.destination != nil) { [weak self] in
-            Task { @MainActor in await self?.activate(notice) }
+            Task { @MainActor in await self?.activate(notice, input: "shortcut") }
         }
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 390, height: 170),
                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -97,7 +115,7 @@ final class AgentToastPresenter {
         dismissal = Task { [weak self] in
             try? await Task.sleep(for: duration)
             guard !Task.isCancelled else { return }
-            self?.dismissCurrent(expectedID: notice.id)
+            self?.dismissCurrent(expectedID: notice.id, reason: "timeout")
         }
     }
 }
@@ -132,7 +150,7 @@ private struct AgentToastView: View {
                         if shortcut.registered { Text(shortcut.binding.displayString).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary) }
                     }.font(.caption)
                 } else {
-                    Text(notice.isTest ? "Notification preview" : "The task's Space could not be identified.")
+                    Text(notice.isTest ? "Notification preview" : "Could not determine the Space where this task started.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

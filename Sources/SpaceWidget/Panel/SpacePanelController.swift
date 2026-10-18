@@ -9,6 +9,8 @@ final class SpacePanelController {
         let hostingView: NSHostingView<SpaceBarView>
         let hotZoneView: HotZoneView
         let pageState: SpaceBarPageState
+        let labelOverlay: SpaceLabelOverlay
+        var labelTransitions: SpaceLabelTransitionTracker
         var lastSpaceID: UInt64? = nil
         var currentEffectiveIconsPerPage: Int = 5
     }
@@ -21,6 +23,7 @@ final class SpacePanelController {
     private let autoHideManager: AutoHideManager
     private let configManager: ConfigManager
     private let dockGeometry: DockGeometryObserver
+    private let labelSettings = SpaceLabelSettings.shared
     private var cancellables = Set<AnyCancellable>()
     private var screenObserver: NSObjectProtocol?
     private var hideWorkItem: DispatchWorkItem?
@@ -50,6 +53,7 @@ final class SpacePanelController {
             self?.observeAutoHide()
             self?.observeLayoutInputs()
             self?.observeFullscreenSpaces()
+            self?.observeSpaceLabels()
             self?.installClickDiagnostics()
         }
     }
@@ -160,6 +164,9 @@ final class SpacePanelController {
         hostingView.frame = localBounds
         container.addSubview(hostingView)
 
+        let labelOverlay = SpaceLabelOverlay(frame: localBounds)
+        container.addSubview(labelOverlay)
+
         let hotZoneView = HotZoneView(frame: CGRect(x: 0, y: 0, width: hotZoneWidth(icons: initialEffectiveIcons), height: 61))
         hotZoneView.onMouseEntered = { [weak self] in
             self?.handleMouseEnteredHotZone()
@@ -187,10 +194,13 @@ final class SpacePanelController {
             panel: panel,
             hostingView: hostingView,
             hotZoneView: hotZoneView,
-            pageState: pageState
+            pageState: pageState,
+            labelOverlay: labelOverlay,
+            labelTransitions: SpaceLabelTransitionTracker(initialSpace: spaceEngine.spaceMonitor.displaySpaces[displayID])
         )
         context.currentEffectiveIconsPerPage = initialEffectiveIcons
         panelContexts[displayID] = context
+        labelOverlay.onVisibilityChanged = { [weak self] in self?.updateAllBarViews() }
 
         logPanelSpaces(context, reason: "panelCreated")
         // Space tagging can lag window creation; sample again after the window server settles.
@@ -203,6 +213,8 @@ final class SpacePanelController {
     private func removePanelContext(for displayID: String) {
         swLog("PANEL", "removePanelContext displayID=\(displayID)")
         guard let context = panelContexts[displayID] else { return }
+        context.labelOverlay.onVisibilityChanged = nil
+        context.labelOverlay.cancel()
         // close() rather than orderOut() so the window leaves NSApp's window list — panels are
         // rebuilt on every display reconfiguration and ordered-out ones would pile up.
         context.panel.close()
@@ -213,7 +225,8 @@ final class SpacePanelController {
 
     private func handleRightClick(at windowPoint: NSPoint, displayID: String) {
         // Suppress when bar is auto-hidden
-        if autoHideManager.isEnabled && !autoHideManager.isBarVisible {
+        if autoHideManager.isEnabled && !autoHideManager.isBarVisible
+            && panelContexts[displayID]?.labelOverlay.isPresenting != true {
             swLog("PANEL", "rightClick suppressed: bar hidden")
             return
         }
@@ -465,9 +478,10 @@ final class SpacePanelController {
     // content. Two signals decide hiding, per display:
     //  - SpaceMonitor.fullscreenDisplays: native fullscreen Spaces (YouTube fullscreen,
     //    green-button fullscreen) — event-driven via activeSpaceDidChange.
-    //  - FullscreenWindowMonitor.coveredDisplays: display-covering regular windows
-    //    (PowerPoint slideshow, non-native fullscreen players) — these never change
-    //    Space, so they are polled from the window list.
+    //  - FullscreenWindowMonitor.coveredDisplays: the active app hides the Dock via
+    //    system presentation options and covers the display (PowerPoint slideshow,
+    //    non-native fullscreen players). Notifications and drag overlays do not
+    //    hide panels merely because their windows span a display.
 
     private func observeFullscreenSpaces() {
         Publishers.CombineLatest(
@@ -489,18 +503,75 @@ final class SpacePanelController {
         for (displayID, context) in panelContexts {
             let shouldHide = fullscreenDisplays.contains(displayID)
             if shouldHide && context.panel.isVisible {
-                swLog("PANEL", "hide panel: fullscreen space active displayID=\(displayID)")
+                context.labelOverlay.cancel()
+                swLog("PANEL", "hide panel: fullscreen space or Dock-hiding presentation displayID=\(displayID)")
                 balloonPanel?.dismiss()
                 balloonPanel = nil
                 context.panel.orderOut(nil)
             } else if !shouldHide && !context.panel.isVisible {
-                swLog("PANEL", "reshow panel: desktop space restored displayID=\(displayID)")
+                swLog("PANEL", "reshow panel: no fullscreen space or Dock-hiding presentation displayID=\(displayID)")
                 context.panel.orderFrontRegardless()
             }
         }
     }
 
     // MARK: - Engine Observer
+
+    private func observeSpaceLabels() {
+        labelSettings.onPreview = { [weak self] in
+            guard let self, let screen = NSScreen.main,
+                  let displayID = displayIdentifier(for: screen),
+                  let space = self.spaceEngine.spaceMonitor.displaySpaces[displayID] else { return false }
+            return self.presentSpaceLabel(space, on: displayID)
+        }
+        labelSettings.$isEnabled
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in
+                guard !enabled, let self else { return }
+                for context in self.panelContexts.values { context.labelOverlay.cancel() }
+            }
+            .store(in: &cancellables)
+
+        // Uses the existing Space notification stream, independently of app/icon
+        // snapshot refreshes. Fullscreen return can retain the same desktop ID.
+        spaceEngine.spaceMonitor.$displaySpaces
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] spaces in
+                guard let self else { return }
+                guard spaces == self.spaceEngine.spaceMonitor.displaySpaces else { return }
+                for displayID in Array(self.panelContexts.keys) {
+                    guard var context = self.panelContexts[displayID] else { continue }
+                    let space = spaces[displayID]
+                    let changed = context.labelTransitions.observe(space)
+                    self.panelContexts[displayID] = context
+                    if space == nil { context.labelOverlay.cancel() }
+                    if changed, let space { _ = self.presentSpaceLabel(space, on: displayID) }
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    @discardableResult
+    private func presentSpaceLabel(_ space: ActiveSpace, on displayID: String) -> Bool {
+        guard labelSettings.isEnabled,
+              !spaceEngine.spaceMonitor.fullscreenDisplays.contains(displayID),
+              !fullscreenWindowMonitor.coveredDisplays.contains(displayID),
+              let context = panelContexts[displayID],
+              let screen = NSScreen.screens.first(where: { displayIdentifier(for: $0) == displayID }) else { return false }
+        let label = configManager.labelFor(displayID: displayID, spaceID: space.id,
+            ordinal: space.ordinal, uuid: space.uuid,
+            mainDisplayID: spaceEngine.spaceMonitor.mainDisplayIdentifier) ?? "Untitled"
+        let localVisible = screen.visibleFrame.offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY)
+        // Nonactivating, already-owned panel; no desktop navigation or app activation.
+        if !context.panel.isVisible { context.panel.orderFrontRegardless() }
+        context.labelOverlay.show(name: label, ordinal: space.ordinal, visibleFrame: localVisible,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+            revealDelay: autoHideManager.isEnabled && !autoHideManager.isBarVisible ? 0.25 : 0)
+        updateAllBarViews()
+        swLog("SPACELABEL", "present ordinal=\(space.ordinal) display=\(displayID)")
+        return true
+    }
 
     private func observeEngine() {
         spaceEngine.$snapshots
@@ -572,6 +643,7 @@ final class SpacePanelController {
                     hasNewDisplays = true
                 } else {
                     // Resize existing panel to updated screen frame
+                    self.panelContexts[displayID]?.labelOverlay.cancel()
                     self.panelContexts[displayID]?.panel.setFrame(screen.frame, display: true)
                 }
             }
@@ -653,21 +725,28 @@ final class SpacePanelController {
     }
 
     private func makeSpaceBarView(from snapshot: DockSnapshot, displayID: String, pageState: SpaceBarPageState, iconsPerPage: Int) -> SpaceBarView {
-        SpaceBarView(
-            spaceNumber: "\(snapshot.spaceNumber)",
-            spaceLabel: snapshot.spaceLabel,
+        // The label must match the animation even while the app-icon fetch for
+        // the new Space is still finishing in the background.
+        let current = spaceEngine.spaceMonitor.displaySpaces[displayID] ?? snapshot.space
+        let label = configManager.labelFor(displayID: displayID, spaceID: current.id,
+            ordinal: current.ordinal, uuid: current.uuid,
+            mainDisplayID: spaceEngine.spaceMonitor.mainDisplayIdentifier) ?? "Untitled"
+        return SpaceBarView(
+            spaceNumber: "\(current.ordinal)",
+            spaceLabel: label,
             items: snapshot.items,
             totalItemCount: snapshot.items.count,
-            isBarVisible: !autoHideManager.isEnabled || autoHideManager.isBarVisible,
+            isBarVisible: !autoHideManager.isEnabled || autoHideManager.isBarVisible
+                || panelContexts[displayID]?.labelOverlay.isPresenting == true,
             onEditLabel: { [weak self] in
-                self?.promptForSpaceLabelEdit(snapshot: snapshot, displayID: displayID)
+                self?.promptForSpaceLabelEdit(space: current, label: label, displayID: displayID)
             },
             onSelectSpaceNumber: { [weak self] in
                 self?.showDesktopListForDisplay(displayID: displayID)
             },
             iconsPerPage: iconsPerPage,
             pageState: pageState,
-            spaceID: snapshot.spaceID,
+            spaceID: current.id,
             displayID: displayID
         )
     }
@@ -746,16 +825,16 @@ final class SpacePanelController {
         }
     }
 
-    private func promptForSpaceLabelEdit(snapshot: DockSnapshot, displayID: String) {
+    private func promptForSpaceLabelEdit(space: ActiveSpace, label: String, displayID: String) {
         let alert = NSAlert()
         alert.messageText = "Edit Space Label"
-        alert.informativeText = "Update the context text for Space \(snapshot.spaceNumber)."
+        alert.informativeText = "Update the context text for Space \(space.ordinal)."
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
 
         let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        textField.stringValue = snapshot.spaceLabel == "Untitled" ? "" : snapshot.spaceLabel
+        textField.stringValue = label == "Untitled" ? "" : label
         alert.accessoryView = textField
 
         NSApp.activate(ignoringOtherApps: true)
@@ -764,10 +843,10 @@ final class SpacePanelController {
 
         spaceEngine.configManager.updateSpaceLabel(
             displayID: displayID,
-            spaceID: snapshot.spaceID,
-            ordinal: snapshot.spaceNumber,
+            spaceID: space.id,
+            ordinal: space.ordinal,
             label: textField.stringValue,
-            uuid: snapshot.spaceUUID,
+            uuid: space.uuid,
             mainDisplayID: spaceEngine.spaceMonitor.mainDisplayIdentifier
         )
     }

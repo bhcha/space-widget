@@ -1,25 +1,20 @@
 import AppKit
 import Combine
 
-/// Detects apps covering an entire display with a regular window on a desktop space
-/// (PowerPoint slideshows, non-native fullscreen video players). These never enter a
-/// fullscreen Space, so SpaceMonitor's space-type check cannot see them — and no
-/// NSWorkspace notification fires when an app opens a window within itself, so this
-/// polls the window list instead.
+/// Detects desktop-space presentations that actually suppress the Dock (such as a
+/// PowerPoint slideshow). Native fullscreen Spaces are handled by SpaceMonitor.
 ///
-/// A window counts as "covering" when its bounds contain the display's full
-/// CGDisplayBounds — including the menu bar strip, which a normally maximized window
-/// never overlaps. Owners with permanent display-sized windows (Dock keeps one at
-/// layer 20 for Mission Control; Window Server holds transition shields) are excluded,
-/// as are this app's own panels.
+/// Screen-sized windows alone are not a fullscreen signal: notification and drag
+/// overlays can have those bounds while leaving the Dock available. Require the
+/// active app's system presentation options to hide the Dock, then use only that
+/// app's covering windows to identify the affected displays. Ordinary Dock autohide
+/// is a user preference, not an app presentation option.
 final class FullscreenWindowMonitor: ObservableObject {
-    /// Display identifier strings (same format as `displayIdentifier(for:)`) whose
-    /// entire bounds are covered by another app's window.
+    /// Displays covered by the active app while its presentation hides the Dock.
     @Published private(set) var coveredDisplays: Set<String> = []
 
     private let timer: DispatchSourceTimer
     private let ownPID = getpid()
-    private static let excludedOwners: Set<String> = ["Dock", "Window Server", "WindowManager"]
 
     init(interval: TimeInterval = 1.0) {
         timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
@@ -33,15 +28,32 @@ final class FullscreenWindowMonitor: ObservableObject {
     }
 
     private func poll() {
-        let covered = Self.detectCoveredDisplays(ownPID: ownPID)
+        // AppKit state belongs on the main thread; keep the window-list scan off it.
+        let (options, frontmostPID) = DispatchQueue.main.sync {
+            (NSApp.currentSystemPresentationOptions,
+             NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        }
+        let covered = Self.detectCoveredDisplays(
+            presentationOptions: options,
+            frontmostPID: frontmostPID,
+            ownPID: ownPID
+        )
         DispatchQueue.main.async { [weak self] in
             guard let self, self.coveredDisplays != covered else { return }
-            swLog("PANEL", "covering-window change \(self.coveredDisplays.sorted()) -> \(covered.sorted())")
+            swLog("PANEL", "dock-hiding presentation change \(self.coveredDisplays.sorted()) -> \(covered.sorted()) options=\(options.rawValue) frontmostPID=\(frontmostPID ?? 0)")
             self.coveredDisplays = covered
         }
     }
 
-    private static func detectCoveredDisplays(ownPID: pid_t) -> Set<String> {
+    private static func detectCoveredDisplays(
+        presentationOptions: NSApplication.PresentationOptions,
+        frontmostPID: pid_t?,
+        ownPID: pid_t
+    ) -> Set<String> {
+        // Also avoids a window-server query during ordinary desktop use.
+        guard presentationOptions.contains(.hideDock) || presentationOptions.contains(.autoHideDock),
+              let frontmostPID, frontmostPID != ownPID else { return [] }
+
         var displayIDs = [CGDirectDisplayID](repeating: 0, count: 16)
         var displayCount: UInt32 = 0
         guard CGGetActiveDisplayList(16, &displayIDs, &displayCount) == .success, displayCount > 0 else {
@@ -58,14 +70,31 @@ final class FullscreenWindowMonitor: ObservableObject {
             return []
         }
 
+        return coveredDisplays(
+            presentationOptions: presentationOptions,
+            frontmostPID: frontmostPID,
+            ownPID: ownPID,
+            displays: displays,
+            windowList: windowList
+        )
+    }
+
+    static func coveredDisplays(
+        presentationOptions: NSApplication.PresentationOptions,
+        frontmostPID: pid_t?,
+        ownPID: pid_t,
+        displays: [(uuid: String, bounds: CGRect)],
+        windowList: [[String: Any]]
+    ) -> Set<String> {
+        guard presentationOptions.contains(.hideDock) || presentationOptions.contains(.autoHideDock),
+              let frontmostPID, frontmostPID != ownPID else { return [] }
+
         var covered: Set<String> = []
         for info in windowList {
             guard let layer = info[kCGWindowLayer as String] as? Int, layer >= 0,
-                  let pid = info[kCGWindowOwnerPID as String] as? pid_t, pid != ownPID,
+                  let pid = info[kCGWindowOwnerPID as String] as? pid_t, pid == frontmostPID,
                   let boundsDict = info[kCGWindowBounds as String] as? [String: CGFloat]
             else { continue }
-            let owner = info[kCGWindowOwnerName as String] as? String ?? ""
-            if excludedOwners.contains(owner) { continue }
             let alpha = info[kCGWindowAlpha as String] as? Double ?? 1.0
             guard alpha > 0.1 else { continue }
             let rect = CGRect(

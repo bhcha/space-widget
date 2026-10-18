@@ -32,6 +32,7 @@ SpaceWidget은 이 지점을 보완합니다.
 
 - 현재 활성 Space 번호와 컨텍스트 라벨을 좌하단 플로팅 바에 표시
 - Space 전환 시 자동 감지 및 갱신
+- Space 전환 시 위젯 이름에서 상단 중앙으로 커지며 올라갔다 돌아오는 물방울 라벨. `Preferences → Appearance → Space Name Animation` 스위치로 켜기·끄기 및 미리보기 제공. 끄면 현재 라벨도 사라지고 설정은 재실행 후 유지된다. [동작과 검증](docs/next-work-plan.md)
 - 라벨 영역 클릭으로 인라인 라벨 편집
 - non-desktop space (fullscreen, overlay, tiled) 자동 필터링
 
@@ -393,7 +394,7 @@ make clean                # 클린
 
 ## Planned features
 
-- [ ] **Space 전환 라벨** — Space를 이동할 때 화면 상단 중앙에 현재 Space 이름을 잠시 표시한 뒤 페이드로 숨긴다. 켜기·끄기와 미리보기를 제공한다. [다음 작업 계획](docs/next-work-plan.md)
+- [ ] **토스트 겹침 방지** — 최신 토스트를 위에, 이전 토스트를 아래에 쌓고 서로 겹치지 않도록 배치한다. [작업 계획](docs/next-work-plan.md#next-item-toast-stacking)
 - [ ] **Claude·Codex 질문 팝업** — 에이전트가 사용자에게 묻는 질문을 팝업으로 표시하고, 팝업에 입력한 답을 원래 세션에 전달한다. **가능 여부 확인 필요:** CLI·데스크톱 앱별 공식 질문 수신 이벤트와 답변 전달 인터페이스를 먼저 조사한다. 현재 구현 범위에는 포함하지 않는다.
 
 ## Acknowledgements

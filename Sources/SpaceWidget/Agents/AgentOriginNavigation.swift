@@ -13,13 +13,17 @@ struct AgentOriginSnapshot {
         let id: UInt64
         let ordinal: Int
         let displayID: String
+        var label: String? = nil
         var origin: AgentOrigin { .init(displayID: displayID, spaceUUID: uuid) }
     }
     let permitted: Bool
     let spaces: [Space]
 
     func resolve(_ origin: AgentOrigin) -> Space? {
-        let matches = spaces.filter { $0.uuid == origin.spaceUUID && $0.displayID == origin.displayID }
+        // A desktop can migrate to another display when monitors reconnect.
+        // Its UUID is the identity; a captured display ID is only historical metadata.
+        // Ambiguous duplicate UUIDs still fail closed, even on the old display.
+        let matches = spaces.filter { $0.uuid == origin.spaceUUID }
         return matches.count == 1 ? matches[0] : nil
     }
 }
@@ -37,53 +41,103 @@ final class AgentOriginNavigation {
     private let backend: AgentOriginBackend
     private let log: (String) -> Void
     private let wait: (Duration) async -> Void
+    private let diagnostics: HookDiagnostics
     private var navigating = false
 
     init(backend: AgentOriginBackend,
          log: @escaping (String) -> Void = { swLog("SPACERETURN", $0) },
+         diagnostics: HookDiagnostics = .live,
          wait: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
         self.backend = backend
         self.log = log
         self.wait = wait
+        self.diagnostics = diagnostics
     }
 
-    func navigate(to origin: AgentOrigin) async -> Bool {
+    func navigate(to origin: AgentOrigin, event: AgentHookEvent? = nil, noticeID: UUID? = nil) async -> Bool {
+        var fields = ["destination_uuid": origin.spaceUUID, "destination_display": origin.displayID,
+                      "notice": noticeID?.uuidString ?? "none"]
+        var outcome = "busy"
+        let started = Date()
+        defer {
+            fields["outcome"] = outcome
+            fields["elapsed_ms"] = String(Int(Date().timeIntervalSince(started) * 1000))
+            diagnostics.emit("navigation.finished", event: event, fields: fields)
+        }
         guard !navigating else { return false }
         navigating = true
         defer { navigating = false }
         let initial = backend.snapshot()
+        fields["spaces"] = initial.spaces.map { "\($0.id):\($0.uuid):\($0.displayID):\($0.ordinal):\($0.label ?? "")" }.joined(separator: ";")
+        fields["accessibility"] = String(initial.permitted)
         guard let target = initial.resolve(origin) else {
+            outcome = "destination_unavailable"
             log("unavailable uuid=\(origin.spaceUUID) display=\(origin.displayID)")
             return false
         }
-        let current = backend.currentSpace(on: origin.displayID)
-        log("requested uuid=\(origin.spaceUUID) target=\(target.id) current=\(current ?? 0) display=\(origin.displayID)")
-        if current == target.id { log("already on target=\(target.id)"); return true }
-        guard initial.permitted else { log("accessibility unavailable"); return false }
+        fields["captured_display"] = origin.displayID
+        fields["destination_display"] = target.displayID
+        fields["display_rebound"] = String(target.displayID != origin.displayID)
+        let current = backend.currentSpace(on: target.displayID)
+        fields["target_id"] = String(target.id)
+        fields["target_label"] = target.label ?? "Space \(target.ordinal)"
+        fields["actual_id"] = current.map(String.init) ?? "none"
+        fields["actual_uuid"] = initial.spaces.first { $0.id == current && $0.displayID == target.displayID }?.uuid ?? "none"
+        diagnostics.emit("navigation.requested", event: event, fields: fields)
+        log("requested uuid=\(origin.spaceUUID) target=\(target.id) current=\(current ?? 0) display=\(target.displayID)")
+        if current == target.id { outcome = "already_there"; log("already on target=\(target.id)"); return true }
+        guard initial.permitted else { outcome = "accessibility_denied"; log("accessibility unavailable"); return false }
         backend.requestSwitch(to: target)
         // Event posting and application activation are not evidence of arrival.
         // Require a stable destination, including the macOS 27 bounce interval.
         var consecutive = 0
-        for _ in 0..<40 {
+        var previous = current
+        for sample in 0..<40 {
+            let snapshot = backend.snapshot()
             guard !Task.isCancelled,
-                  let resolved = backend.snapshot().resolve(origin), resolved.id == target.id else {
+                  let resolved = snapshot.resolve(origin), resolved.id == target.id,
+                  resolved.displayID == target.displayID else {
+                outcome = Task.isCancelled ? "cancelled" : "destination_changed"
                 log("cancelled or destination disappeared")
                 return false
             }
-            consecutive = backend.currentSpace(on: origin.displayID) == target.id ? consecutive + 1 : 0
+            let actual = backend.currentSpace(on: target.displayID)
+            fields["actual_id"] = actual.map(String.init) ?? "none"
+            fields["actual_uuid"] = snapshot.spaces.first { $0.id == actual && $0.displayID == target.displayID }?.uuid ?? "none"
+            if actual != previous {
+                fields["sample"] = String(sample)
+                diagnostics.emit("navigation.observed", event: event, fields: fields)
+                previous = actual
+            }
+            consecutive = actual == target.id ? consecutive + 1 : 0
             if consecutive >= 9 {
+                outcome = "confirmed"
                 log("confirmed uuid=\(origin.spaceUUID) current=\(target.id)")
                 return true
             }
             await wait(.milliseconds(50))
         }
-        log("not reached target=\(target.id) current=\(backend.currentSpace(on: origin.displayID) ?? 0)")
+        outcome = "not_reached"
+        log("not reached target=\(target.id) current=\(backend.currentSpace(on: target.displayID) ?? 0)")
         return false
     }
 
     func origin(for event: AgentHookEvent) -> AgentOrigin? {
-        guard let origin = event.origin, backend.snapshot().resolve(origin) != nil else { return nil }
-        return origin
+        guard let origin = event.origin else { return nil }
+        guard event.originCapturePolicy == AgentSpaceCapture.policy else {
+            diagnostics.emit("destination.rejected", event: event, fields: ["reason": "unverified_capture"])
+            return nil
+        }
+        let snapshot = backend.snapshot()
+        let resolved = snapshot.resolve(origin)
+        diagnostics.emit("destination.resolved", event: event, fields: [
+            "captured_display": origin.displayID,
+            "resolved_display": resolved?.displayID ?? "none",
+            "resolved_id": resolved.map { String($0.id) } ?? "none",
+            "uuid_matches": String(snapshot.spaces.filter { $0.uuid == origin.spaceUUID }.count),
+            "live_spaces": snapshot.spaces.map { "\($0.id):\($0.uuid):\($0.displayID)" }.joined(separator: ";")
+        ])
+        return resolved?.origin
     }
 
     func label(for origin: AgentOrigin) -> String? {
@@ -149,9 +203,10 @@ enum AgentProcessAncestry {
 }
 
 /// Called synchronously in the hook helper at SessionStart/UserPromptSubmit, never Stop.
-/// A foreground application is only relevant when it owns the hook's ancestor process.
-/// Detached/ambiguous sessions stay unknown instead of using the completion-time desktop.
+/// App-level foreground state cannot identify the terminal that emitted the hook.
+/// Detached/ambiguous sessions stay unknown, even when their host is foreground.
 enum AgentSpaceCapture {
+    static let policy = "single_host_space_v1"
     static func spaces() -> [AgentOriginSnapshot.Space] {
         let liveDisplays = Set(NSScreen.screens.compactMap { displayIdentifier(for: $0) })
         var result: [AgentOriginSnapshot.Space] = []
@@ -169,10 +224,11 @@ enum AgentSpaceCapture {
         return result
     }
 
-    static func select(windowSpaces: [[AgentOrigin]], foregroundSpace: AgentOrigin?) -> AgentOrigin? {
-        // All-Spaces windows cannot establish where a session was submitted.
+    static func select(windowSpaces: [[AgentOrigin]]) -> AgentOrigin? {
+        // A different terminal of the same app can be foreground. Every enumerated
+        // host window must belong to the same single navigable Space; an unknown,
+        // full-screen or All-Spaces window must not be hidden by a known window.
         let unique = Set(windowSpaces.compactMap { $0.count == 1 ? $0.first : nil })
-        if let foregroundSpace, unique.contains(foregroundSpace) { return foregroundSpace }
         return unique.count == 1 && windowSpaces.allSatisfy({ $0.count == 1 }) ? unique.first : nil
     }
 
@@ -188,23 +244,37 @@ enum AgentSpaceCapture {
     }
 
     static func capture(owner: pid_t) -> AgentOrigin? {
+        inspect(owner: owner).origin
+    }
+
+    static func inspect(owner: pid_t) -> (origin: AgentOrigin?, fields: [String: String]) {
         let spaces = spaces()
         let records = (CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+        var windowIDs: [String] = []
         let memberships: [[AgentOrigin]] = records.compactMap { record in
             guard record[kCGWindowOwnerPID as String] as? pid_t == owner,
                   record[kCGWindowLayer as String] as? Int == 0 else { return nil }
             guard let wid = record[kCGWindowNumber as String] as? UInt32,
                   let ids = CGSCopySpacesForWindows(CGSMainConnectionID(), 0x7, [wid] as CFArray) as? [UInt64] else { return [] }
+            windowIDs.append("\(wid):" + ids.map { id in "\(id)=\(spaces.first { $0.id == id }?.uuid ?? "unmapped")" }.joined(separator: ","))
             // Preserve ambiguity, including full-screen memberships we do not navigate to.
             guard ids.count == 1, let space = spaces.first(where: { $0.id == ids[0] }) else { return [] }
             return [space.origin]
         }
         var foreground: AgentOrigin?
-        if NSWorkspace.shared.frontmostApplication?.processIdentifier == owner,
+        let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        if frontmost == owner,
            let display = CGSCopyActiveMenuBarDisplayIdentifier(CGSMainConnectionID()) as String? {
             let current = CGSManagedDisplayGetCurrentSpace(CGSMainConnectionID(), display as CFString)
             foreground = spaces.first { $0.displayID == display && $0.id == current }?.origin
         }
-        return select(windowSpaces: memberships, foregroundSpace: foreground)
+        let selected = select(windowSpaces: memberships)
+        let reason = selected == nil ? (memberships.isEmpty ? "no_host_windows" : "ambiguous_host_windows")
+            : "single_host_space"
+        return (selected, ["capture_reason": reason, "host_pid": String(owner),
+                           "foreground_pid": frontmost.map(String.init) ?? "none",
+                           "foreground_uuid": foreground?.spaceUUID ?? "none",
+                           "window_spaces": windowIDs.joined(separator: ";"),
+                           "window_count": String(memberships.count)])
     }
 }

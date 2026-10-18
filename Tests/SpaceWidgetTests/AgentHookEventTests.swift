@@ -19,6 +19,12 @@ final class AgentHookEventTests: XCTestCase {
         return AgentHookEvent.parse(payload, installation: installation, expectedKind: kind, now: at)!
     }
 
+    private func withoutPrompt(_ event: AgentHookEvent) -> AgentHookEvent {
+        var event = event
+        event.contextMatch = "no_prompt_match"
+        return event
+    }
+
     func testAllowlistRejectsRecursiveSubagentsMalformedAndDoesNotPersistContent() throws {
         var object: [String: Any] = ["session_id": "session", "hook_event_name": "Stop", "turn_id": "t",
             "prompt": "SECRET", "last_assistant_message": "SECRET", "transcript_path": "/never/read", "cwd": "/private/project"]
@@ -28,7 +34,7 @@ final class AgentHookEventTests: XCTestCase {
         let permissions = try FileManager.default.attributesOfItem(atPath: transport.file.path)[.posixPermissions] as? NSNumber
         XCTAssertEqual(permissions?.intValue, 0o600)
         let saved = try String(contentsOf: transport.file)
-        for forbidden in ["SECRET", "transcript", "prompt", "/private/project", "cwd"] { XCTAssertFalse(saved.contains(forbidden)) }
+        for forbidden in ["SECRET", "transcript", "\"prompt\":", "/private/project", "cwd"] { XCTAssertFalse(saved.contains(forbidden)) }
         for (key, value) in [("stop_hook_active", true as Any), ("agent_id", "child"), ("subagent_id", "child")] {
             object[key] = value
             XCTAssertNil(AgentHookEvent.parse(object, installation: installation, expectedKind: "Stop"))
@@ -46,7 +52,7 @@ final class AgentHookEventTests: XCTestCase {
         let first = event()
         XCTAssertTrue(try transport.enqueue(first))
         XCTAssertFalse(try transport.enqueue(first))
-        XCTAssertEqual(try transport.drain(), [first])
+        XCTAssertEqual(try transport.drain(), [withoutPrompt(first)])
         let restarted = HookEventTransport(installation: installation)
         XCTAssertFalse(try restarted.enqueue(first))
         XCTAssertTrue(try restarted.drain().isEmpty)
@@ -82,7 +88,7 @@ final class AgentHookEventTests: XCTestCase {
         let second = try parsed("prompt-2", seconds: 0.2)
         XCTAssertTrue(try transport.enqueue(first))
         XCTAssertTrue(try transport.enqueue(second), "Different prompts must not be throttled as retries")
-        XCTAssertEqual(try transport.drain(), [first, second])
+        XCTAssertEqual(try transport.drain(), [withoutPrompt(first), withoutPrompt(second)])
         let restarted = HookEventTransport(installation: installation)
         XCTAssertFalse(try restarted.enqueue(parsed("prompt-1", seconds: 30)))
         XCTAssertTrue(try restarted.drain().isEmpty)
@@ -106,9 +112,9 @@ final class AgentHookEventTests: XCTestCase {
         let current = event(turn: "new", at: start.addingTimeInterval(1))
         try transport.enqueue(old); try transport.enqueue(current)
         XCTAssertEqual(try transport.pendingCount(before: start), 1)
-        XCTAssertEqual(try transport.drain(since: start), [current])
+        XCTAssertEqual(try transport.drain(since: start), [withoutPrompt(current)])
         XCTAssertEqual(try transport.pendingCount(before: start), 1)
-        XCTAssertEqual(try transport.drain(), [old])
+        XCTAssertEqual(try transport.drain(), [withoutPrompt(old)])
         XCTAssertFalse(try transport.enqueue(old), "Explicit discard/view must not permit retry replay")
     }
 
@@ -199,11 +205,11 @@ final class AgentHookEventTests: XCTestCase {
         let model = AgentNotificationModel(defaults: defaults, startedAt: started, installations: [installation],
             present: { notices.append($0) }, playSound: {})
         await model.poll()
-        XCTAssertEqual(notices.map(\.event), [fresh]); XCTAssertEqual(model.pendingCount, 1)
+        XCTAssertEqual(notices.map(\.event), [withoutPrompt(fresh)]); XCTAssertEqual(model.pendingCount, 1)
         await model.poll()
         XCTAssertEqual(notices.count, 1)
         await model.resolvePending(show: true)
-        XCTAssertEqual(notices.map(\.event), [fresh, old])
+        XCTAssertEqual(notices.map(\.event), [withoutPrompt(fresh), withoutPrompt(old)])
         XCTAssertEqual(model.pendingCount, 0)
         let restarted = AgentNotificationModel(defaults: defaults, startedAt: started, installations: [installation],
             present: { notices.append($0) }, playSound: {})

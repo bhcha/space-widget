@@ -11,16 +11,20 @@ app focus, not the requested Space. Source-app identity remains display metadata
 
 ## Capture and delivery
 
-The v4 helper captures the source application's bundle ID, PID, and display name
+The v6 helper captures the source application's bundle ID, PID, and display name
 during `SessionStart` and `UserPromptSubmit`. It follows process ancestry to a
 running GUI app. The v3 read-only `sysctl(KERN_PROC_PID)` fallback is retained:
 `proc_pidinfo` alone cannot read the parent of the root-owned `/usr/bin/login`
 in the reproduced Ghostty terminal chain. If ancestry cannot identify an app,
-known terminal environment metadata can identify one unique running app. The
+known terminal environment metadata can identify one unique running app for
+display only; it cannot authorize Space capture. The
 helper never guesses from the provider, project path, or completion-time focus.
 
-Space UUID and display ID are captured when source-window membership
-unambiguously identifies an ordinary Space. They determine the destination.
+Space UUID and display ID are captured only for an actual GUI process ancestor
+when every enumerated host window belongs to the same single ordinary Space.
+The host being foreground cannot distinguish different terminal windows.
+The receiver marks this capture `single_host_space_v1`; the app rejects legacy
+origins without that policy instead of reusing an older foreground guess.
 Missing, ambiguous, fullscreen, or disconnected Space information prevents
 navigation; a known app alone cannot identify the destination. No Accessibility prompt or window UI is opened.
 Desktop app detection alone does not establish that it emits supported hooks;
@@ -30,17 +34,22 @@ The locked spool retains up to 128 request contexts for 24 hours, keyed by
 provider/configuration/session and turn. `Stop` carries the saved app and Space
 even after a start event was drained or the main app restarted. It never captures
 the foreground app again. A new request with unknown context clears the old
-target. SessionStart is a fallback only when no prompt was recorded. Without
-provider turn IDs only the latest matching session context is available.
+target. SessionStart alone is never a fallback destination. Identified prompt
+contexts survive SessionStart during compaction; no-ID prompts survive an
+explicit `compact` start only. Without provider turn IDs only the latest
+compatible prompt context is available. Stop inherits the capture policy from
+that context and cannot certify an older capture itself.
 
 ## Navigation and shortcut
 
-`AgentOriginNavigation` resolves the captured UUID on its original display and
+`AgentOriginNavigation` resolves the unique captured UUID across current live displays and
 requests `SpaceSwitcher` to move there. It then reads the current Space ID up to
 40 times at 50ms intervals and requires nine consecutive matching observations
 (about 400ms) before reporting success. Posting an event, briefly reaching the
 target and bouncing back, or activating the correct app cannot count as arrival.
-Deleted Spaces and disconnected displays never fall back to another destination.
+Deleted Spaces and duplicate UUIDs never fall back to another destination.
+A surviving Space that migrated to another display retains its UUID; navigation
+uses that current display instead of rejecting it because the saved display changed.
 The current Space needs no synthetic input; unavailable Accessibility permission
 prevents an actual switch. The verification logs use `[SPACERETURN]` with target,
 current Space ID, display, and the original UUID.
@@ -67,7 +76,7 @@ notice; FIFO and stale callback checks keep queued notifications separate.
 Preview and unknown-Space notices cannot navigate. A failed transition shows an
 error instead of claiming success or selecting another Ghostty window.
 
-## Installation and verification
+## Initial navigation repair: installation and verification (historical)
 
 The installed v4 helpers already capture Space UUID and app metadata. This fix
 changes the main application's navigation and does not replace helper binaries,

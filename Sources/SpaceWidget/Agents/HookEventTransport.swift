@@ -13,6 +13,12 @@ struct AgentHookEvent: Codable, Equatable {
     var project: String? = nil
     var origin: AgentOrigin? = nil
     var application: AgentApplicationTarget? = nil
+    var contextMatch: String? = nil
+    var contextTrace: String? = nil
+    var startSource: String? = nil
+    // Absent in legacy spools. Only the receiver sets this after its own capture;
+    // provider payloads cannot assert that an old/guessed origin is verified.
+    var originCapturePolicy: String? = nil
 
     var agent: LocalAgent? { LocalAgent(rawValue: agentID) }
     var sessionKey: String { HookInstallation.digest(Data("\(source)\u{0}\(session)".utf8)) }
@@ -39,10 +45,12 @@ struct AgentHookEvent: Codable, Equatable {
         let identityField = installation.agent == .claude && object["prompt_id"] != nil ? "prompt_id" : "turn_id"
         let turn = identifier(object[identityField])
         if object[identityField] != nil && turn == nil { return nil }
+        let source = object["source"] as? String
+        let startSource = expectedKind == "SessionStart" && ["startup", "resume", "clear", "compact", "fork"].contains(source ?? "") ? source : nil
         return AgentHookEvent(agentID: installation.agent.rawValue,
             source: HookInstallation.digest(Data("\(installation.agent.rawValue):\(installation.directory.standardizedFileURL.path)".utf8)),
             session: session, kind: expectedKind, turn: turn, received: now,
-            project: AgentProjectName.resolve(cwd: object["cwd"] as? String))
+            project: AgentProjectName.resolve(cwd: object["cwd"] as? String), startSource: startSource)
     }
 }
 
@@ -53,6 +61,7 @@ struct HookEventTransport {
     static let maximumSeen = 512
     static let maximumBytes = 262_144
     let installation: HookInstallation
+    var diagnostics: HookDiagnostics = .live
     var file: URL { installation.support.appendingPathComponent("events-v1.json") }
     private struct Seen: Codable { let key: String; let at: Date; let hasTurn: Bool }
     private struct Context: Codable {
@@ -63,6 +72,8 @@ struct HookEventTransport {
         let application: AgentApplicationTarget?
         let project: String?
         let at: Date
+        var trace: String? = nil
+        var originCapturePolicy: String? = nil
     }
     private struct State: Codable {
         var events: [AgentHookEvent] = []
@@ -73,42 +84,68 @@ struct HookEventTransport {
 
     @discardableResult
     func enqueue(_ event: AgentHookEvent) throws -> Bool {
-        try transaction { state in
+        var queued = event
+        let accepted = try transaction { state in
             // Providers without a turn ID only permit short-window retry suppression;
             // distinct later responses in the same session must still notify.
             if state.seen.contains(where: {
                 $0.key == event.duplicateKey && (event.received.timeIntervalSince($0.at) < ($0.hasTurn ? 86_400 : 2))
-            }) { return false }
+            }) {
+                diagnostics.emit("transport.duplicate", event: event)
+                return false
+            }
             state.seen.append(Seen(key: event.duplicateKey, at: event.received, hasTurn: event.turn != nil))
             state.seen = Array(state.seen.suffix(Self.maximumSeen))
             var event = event
             var contexts = (state.contexts ?? []).filter { event.received.timeIntervalSince($0.at) < 86_400 }
             if event.kind == "SessionStart" || event.kind == "UserPromptSubmit" {
                 if event.kind == "SessionStart" {
-                    contexts.removeAll { $0.key == event.sessionKey }
+                    // Codex emits SessionStart during mid-turn compaction. Keep exact
+                    // request snapshots even if that hook sees a different foreground.
+                    // Without turn IDs, only an explicit compact can preserve a prompt.
+                    contexts.removeAll {
+                        $0.key == event.sessionKey && ($0.kind == "SessionStart" || ($0.turn == nil && event.startSource != "compact"))
+                    }
                 } else {
                     contexts.removeAll { $0.key == event.sessionKey && $0.kind == event.kind && $0.turn == event.turn }
                 }
                 // An unknown new request explicitly replaces stale location information.
                 contexts.append(Context(key: event.sessionKey, kind: event.kind, turn: event.turn,
                                         origin: event.origin, application: event.application,
-                                        project: event.project, at: event.received))
+                                        project: event.project, at: event.received, trace: event.traceID,
+                                        originCapturePolicy: event.originCapturePolicy))
+                diagnostics.emit("context.staged", event: event)
             } else if event.kind == "Stop" {
                 let session = contexts.filter { $0.key == event.sessionKey && $0.at <= event.received }
                 let prompts = session.filter { $0.kind == "UserPromptSubmit" }
-                let context = prompts.last(where: { $0.turn == event.turn })
-                    ?? prompts.last(where: { $0.turn == nil || event.turn == nil })
-                    ?? (prompts.isEmpty ? session.last : nil)
+                let exact = prompts.last(where: { $0.turn == event.turn })
+                let withoutID = prompts.last.flatMap { $0.turn == nil || event.turn == nil ? $0 : nil }
+                let context = exact ?? withoutID
+                // A SessionStart can be a resume/background startup on another desktop.
+                // It is not evidence of where this request was submitted (text2sql → SD).
+                event.contextMatch = context == nil
+                    ? (prompts.isEmpty && !session.isEmpty ? "session_start_rejected" : "no_prompt_match")
+                    : (exact != nil && event.turn != nil ? "exact_turn" : "prompt_without_turn")
+                event.contextTrace = context?.trace
                 // Stop never captures the foreground Space; it uses the request's snapshot.
                 event.origin = context?.origin
+                event.originCapturePolicy = context?.originCapturePolicy
                 event.application = context?.application
                 event.project = event.project ?? context?.project
+                diagnostics.emit("context.resolved", event: event, fields: [
+                    "prompt_count": String(prompts.count),
+                    "context_age_seconds": context.map { String(event.received.timeIntervalSince($0.at)) } ?? "none",
+                    "rejected_session_uuid": context == nil ? (session.last(where: { $0.kind == "SessionStart" })?.origin?.spaceUUID ?? "none") : "none"
+                ])
             }
             state.contexts = Array(contexts.suffix(128))
             state.events.append(event)
             state.events = Array(state.events.suffix(Self.maximumEvents))
+            queued = event
             return true
         }
+        if accepted { diagnostics.emit("transport.committed", event: queued) }
+        return accepted
     }
 
     func drain(since: Date? = nil) throws -> [AgentHookEvent] {

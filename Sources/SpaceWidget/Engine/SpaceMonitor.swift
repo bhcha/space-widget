@@ -20,9 +20,14 @@ final class SpaceMonitor: ObservableObject {
     }
 
     private var debounceTask: DispatchWorkItem?
+    private let notificationCenter: NotificationCenter
+    private let spaceResolver: (() -> (spaces: [String: ActiveSpace], fullscreenDisplays: Set<String>))?
 
-    init() {
-        NSWorkspace.shared.notificationCenter.addObserver(
+    init(notificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
+         spaceResolver: (() -> (spaces: [String: ActiveSpace], fullscreenDisplays: Set<String>))? = nil) {
+        self.notificationCenter = notificationCenter
+        self.spaceResolver = spaceResolver
+        notificationCenter.addObserver(
             self,
             selector: #selector(spaceDidChange),
             name: NSWorkspace.activeSpaceDidChangeNotification,
@@ -32,19 +37,26 @@ final class SpaceMonitor: ObservableObject {
     }
 
     deinit {
-        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        debounceTask?.cancel()
+        notificationCenter.removeObserver(self)
     }
 
     @objc private func spaceDidChange() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.spaceDidChange() }
+            return
+        }
         swLog("EVENT", "nsworkspace.activeSpaceDidChangeNotification received")
         debounceTask?.cancel()
-        swLog("EVENT", "space debounce cancelled_previous=true")
+        // React as soon as macOS reports the change. The trailing read only
+        // reconciles metadata that was still settling at notification time.
+        refresh(immediate: true)
         let task = DispatchWorkItem { [weak self] in
-            swLog("EVENT", "space debounce fired")
+            swLog("EVENT", "space reconciliation fired")
             self?.refresh(immediate: false)
         }
         debounceTask = task
-        swLog("EVENT", "space debounce scheduled delay=0.1 immediate=false")
+        swLog("EVENT", "space reconciliation scheduled delay=0.1")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: task)
     }
 
@@ -55,7 +67,7 @@ final class SpaceMonitor: ObservableObject {
         }
 
         swLog("EVENT", "space refresh begin immediate=\(immediate)")
-        let (resolved, fullscreen) = resolveAllSpaces()
+        let (resolved, fullscreen) = spaceResolver?() ?? resolveAllSpaces()
         commitSpaces(resolved, fullscreenDisplays: fullscreen)
     }
 
@@ -146,10 +158,12 @@ final class SpaceMonitor: ObservableObject {
         for (displayID, space) in resolvedSpaces {
             swLog("EVENT", "space commit display=\(displayID) ordinal=\(space.ordinal) id=\(space.id)")
         }
-        displaySpaces = resolvedSpaces
         if fullscreenDisplays != newFullscreen {
             swLog("SPACE", "fullscreen displays changed \(fullscreenDisplays.sorted()) -> \(newFullscreen.sorted())")
             fullscreenDisplays = newFullscreen
+        }
+        if displaySpaces != resolvedSpaces {
+            displaySpaces = resolvedSpaces
         }
     }
 }

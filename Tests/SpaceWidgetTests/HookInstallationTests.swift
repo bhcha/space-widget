@@ -341,7 +341,7 @@ final class HookInstallationTests: XCTestCase {
 extension HookInstallationTests {
     func testExplicitUpgradePreservesOldBinaryAndRequiresNewCommandTrust() throws {
         for agent in LocalAgent.allCases {
-          for version in [1, 2, 3] {
+          for version in [1, 2, 3, 4, 5] {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: root) }
             let old = HookInstallation(agent: agent, directory: root, helperVersion: version)
@@ -356,7 +356,7 @@ extension HookInstallationTests {
             XCTAssertEqual(try Data(contentsOf: current.helper), newBytes)
             let config = try String(contentsOf: current.file)
             XCTAssertFalse(config.contains("receiver-v\(version)"))
-            XCTAssertTrue(config.contains("receiver-v4"))
+            XCTAssertTrue(config.contains("receiver-v6"))
             XCTAssertTrue(config.contains("UserPromptSubmit"))
             XCTAssertEqual(current.inspect(), agent == .codex ? .pendingTrust : .awaitingExecution)
             XCTAssertNil(try current.install(helperBytes: newBytes))
